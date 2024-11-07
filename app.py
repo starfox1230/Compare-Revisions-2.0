@@ -10,6 +10,30 @@ app = Flask(__name__)
 # Initialize OpenAI API key
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
+# Default customized prompt
+DEFAULT_PROMPT = """Succinctly organize the changes made by the attending to the resident's radiology reports into: 
+1) missed major findings (life threatening or treatment altering), 
+2) missed minor findings, and 
+3) clarified descriptions of findings. 
+
+Assume the attending's version was correct, and anything not included by the attending but was included by the resident should have been left out by the resident. Keep your answers brief and to the point. The reports are: 
+
+Please output your response as structured JSON, with the following keys:
+- "case_number": The case number sent in the request.
+- "major_findings": A list of any major findings missed by the resident (life-threatening or treatment-altering).
+- "minor_findings": A list of minor findings missed by the resident.
+- "clarifications": A list of any clarifications the attending made to improve understanding.
+- "score": The calculated score, where each major finding is worth 3 points and each minor finding is worth 1 point.
+
+Respond in this JSON format, with no other additional text or pleasantries:
+{
+  "case_number": <case_number>,
+  "major_findings": [<major_findings>],
+  "minor_findings": [<minor_findings>],
+  "clarifications": [<clarifications>],
+  "score": <score>
+}"""
+
 # Normalize text: trim spaces but keep returns (newlines) intact
 def normalize_text(text):
     return "\n".join([line.strip() for line in text.splitlines() if line.strip()])
@@ -127,7 +151,7 @@ def extract_cases(text, custom_prompt):
 @app.route('/', methods=['GET', 'POST'])
 def index():
     sorted_cases = False
-    custom_prompt = request.form.get('custom_prompt', 'Summarize report changes as JSON')
+    custom_prompt = request.form.get('custom_prompt', DEFAULT_PROMPT)  # Use default prompt if none provided
     case_data = []
     if request.method == 'POST':
         text_block = request.form['report_text']
@@ -307,14 +331,8 @@ def index():
             <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
         </body>
     </html>
-    """  # Include entire HTML/CSS template here.
+    """
     return render_template_string(template, case_data=case_data, custom_prompt=custom_prompt)
 
 if __name__ == '__main__':
     app.run(debug=True)
-
-
-
-
-
-
