@@ -95,7 +95,7 @@ def get_summary(case_text, custom_prompt, case_number):
             temperature=0.5
         )
         # Capture and parse response content as JSON
-        response_content = response.choices[0].message['content']
+        response_content = response.choices[0].message.content
         print(f"Response for case {case_number}: {response_content}")  # Log for debugging
         return json.loads(response_content)
     except Exception as e:
