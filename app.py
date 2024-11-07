@@ -177,6 +177,9 @@ def index():
                     <button type="button" class="btn btn-secondary" onclick="sortCases('percentage_change')">Sort by Percentage Change</button>
                     <button type="button" class="btn btn-secondary" onclick="sortCases('summary_score')">Sort by Summary Score</button>
                 </div>
+                <ul id="caseNav">
+                    <!-- JavaScript will populate case navigation here dynamically -->
+                </ul>
                 <div id="caseContainer">
                     <!-- JavaScript will populate cases here dynamically -->
                 </div>
@@ -184,6 +187,7 @@ def index():
         </div>
         <script>
             let caseData = {{ case_data | tojson }};
+            
             function sortCases(option) {
                 if (option === "case_number") {
                     caseData.sort((a, b) => parseInt(a.case_num) - parseInt(b.case_num));
@@ -193,6 +197,19 @@ def index():
                     caseData.sort((a, b) => (b.summary?.score || 0) - (a.summary?.score || 0));
                 }
                 displayCases();
+                displayNavigation();
+            }
+
+            function displayNavigation() {
+                const nav = document.getElementById('caseNav');
+                nav.innerHTML = '';
+                caseData.forEach(caseObj => {
+                    nav.innerHTML += `
+                        <li>
+                            <a href="#case${caseObj.case_num}">Case ${caseObj.case_num}</a> - ${caseObj.percentage_change}% change - Score: ${caseObj.summary?.score || 'N/A'}
+                        </li>
+                    `;
+                });
             }
 
             function displayCases() {
@@ -238,7 +255,10 @@ def index():
                 });
             }
 
-            document.addEventListener("DOMContentLoaded", displayCases);
+            document.addEventListener("DOMContentLoaded", () => {
+                displayCases();
+                displayNavigation();
+            });
         </script>
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     </body>
