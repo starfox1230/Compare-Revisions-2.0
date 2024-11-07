@@ -85,7 +85,7 @@ def create_diff_by_section(resident_text, attending_text):
 def get_summary(case_text, custom_prompt, case_number):
     try:
         # Use the updated OpenAI ChatCompletion API
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that outputs structured JSON summaries of radiology report differences."},
