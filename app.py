@@ -68,7 +68,7 @@ def create_diff_by_section(resident_text, attending_text):
 def get_summary(case_text, custom_prompt, case_number):
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that outputs structured JSON summaries of radiology report differences."},
                 {"role": "user", "content": f"{custom_prompt}\nCase Number: {case_number}\n{case_text}"}
@@ -85,7 +85,7 @@ def get_summary(case_text, custom_prompt, case_number):
 
 # Process cases for summaries
 def process_cases(bulk_text, custom_prompt):
-    case_numbers = re.findall(r"Case (\\d+)", bulk_text)
+    case_numbers = re.findall(r"Case (\d+)", bulk_text)
     cases = bulk_text.split("Case")
     structured_output = []
 
@@ -102,13 +102,13 @@ def process_cases(bulk_text, custom_prompt):
 
 # Extract cases and add AI summary tab
 def extract_cases(text, custom_prompt):
-    cases = re.split(r'\\bCase\\s+(\\d+)', text, flags=re.IGNORECASE)
+    cases = re.split(r'\bCase\s+(\d+)', text, flags=re.IGNORECASE)
     parsed_cases = []
 
     for i in range(1, len(cases), 2):
         case_num = cases[i]
         case_content = cases[i + 1].strip()
-        reports = re.split(r'\\s*(Attending\\s+Report\\s*:|Resident\\s+Report\\s*):\\s*', case_content, flags=re.IGNORECASE)
+        reports = re.split(r'\s*(Attending\s+Report\s*:|Resident\s+Report\s*:)\s*', case_content, flags=re.IGNORECASE)
 
         if len(reports) >= 3:
             attending_report = reports[2].strip()
@@ -307,10 +307,14 @@ def index():
             <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
         </body>
     </html>
-    """
-
+    """  # Include entire HTML/CSS template here.
     return render_template_string(template, case_data=case_data, custom_prompt=custom_prompt)
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+
+
+
+
 
