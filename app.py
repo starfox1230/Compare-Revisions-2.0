@@ -222,37 +222,46 @@ def index():
                     container.innerHTML += `
                         <div id="case${caseObj.case_num}">
                             <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
-                            <ul class="nav nav-tabs" id="myTab${caseObj.case_num}" role="tablist">
+                            <ul class="nav nav-tabs" id="myTab{{ caseObj.case_num }}" role="tablist">
                                 <li class="nav-item" role="presentation">
-                                    <button class="nav-link active" id="combined-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#combined${caseObj.case_num}" type="button" role="tab">Combined Report</button>
+                                    <button class="nav-link active" id="summary-tab{{ caseObj.case_num }}" data-bs-toggle="tab" data-bs-target="#summary{{ caseObj.case_num }}" type="button" role="tab">Summary Report</button>
                                 </li>
                                 <li class="nav-item" role="presentation">
-                                    <button class="nav-link" id="resident-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#resident${caseObj.case_num}" type="button" role="tab">Resident Report</button>
+                                    <button class="nav-link" id="combined-tab{{ caseObj.case_num }}" data-bs-toggle="tab" data-bs-target="#combined{{ caseObj.case_num }}" type="button" role="tab">Combined Report</button>
                                 </li>
                                 <li class="nav-item" role="presentation">
-                                    <button class="nav-link" id="attending-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#attending${caseObj.case_num}" type="button" role="tab">Attending Report</button>
+                                    <button class="nav-link" id="resident-tab{{ caseObj.case_num }}" data-bs-toggle="tab" data-bs-target="#resident{{ caseObj.case_num }}" type="button" role="tab">Resident Report</button>
                                 </li>
                                 <li class="nav-item" role="presentation">
-                                    <button class="nav-link" id="summary-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#summary${caseObj.case_num}" type="button" role="tab">Summary Report</button>
+                                    <button class="nav-link" id="attending-tab{{ caseObj.case_num }}" data-bs-toggle="tab" data-bs-target="#attending{{ caseObj.case_num }}" type="button" role="tab">Attending Report</button>
                                 </li>
                             </ul>
-                            <div class="tab-content" id="myTabContent${caseObj.case_num}">
-                                <div class="tab-pane fade show active" id="combined${caseObj.case_num}" role="tabpanel">
-                                    <div class="diff-output">${caseObj.diff}</div>
-                                </div>
-                                <div class="tab-pane fade" id="resident${caseObj.case_num}" role="tabpanel">
-                                    <div class="diff-output"><pre>${caseObj.resident_report}</pre></div>
-                                </div>
-                                <div class="tab-pane fade" id="attending${caseObj.case_num}" role="tabpanel">
-                                    <div class="diff-output"><pre>${caseObj.attending_report}</pre></div>
-                                </div>
-                                <div class="tab-pane fade" id="summary${caseObj.case_num}" role="tabpanel">
+                            <div class="tab-content" id="myTabContent{{ caseObj.case_num }}">
+                                <div class="tab-pane fade show active" id="summary{{ caseObj.case_num }}" role="tabpanel">
                                     <div class="summary-output">
-                                        <p><strong>Score:</strong> ${caseObj.summary?.score || 'N/A'}</p>
-                                        ${caseObj.summary?.major_findings?.length ? `<p><strong>Major Findings:</strong></p><ul>${caseObj.summary.major_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
-                                        ${caseObj.summary?.minor_findings?.length ? `<p><strong>Minor Findings:</strong></p><ul>${caseObj.summary.minor_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
-                                        ${caseObj.summary?.clarifications?.length ? `<p><strong>Clarifications:</strong></p><ul>${caseObj.summary.clarifications.map(clarification => `<li>${clarification}</li>`).join('')}</ul>` : ''}
+                                        <p><strong>Score:</strong> {{ caseObj.summary?.score or 'N/A' }}</p>
+                                        {% if caseObj.summary and caseObj.summary.major_findings %}
+                                            <p><strong>Major Findings:</strong></p>
+                                            <ul>{% for finding in caseObj.summary.major_findings %}<li>{{ finding }}</li>{% endfor %}</ul>
+                                        {% endif %}
+                                        {% if caseObj.summary and caseObj.summary.minor_findings %}
+                                            <p><strong>Minor Findings:</strong></p>
+                                            <ul>{% for finding in caseObj.summary.minor_findings %}<li>{{ finding }}</li>{% endfor %}</ul>
+                                        {% endif %}
+                                        {% if caseObj.summary and caseObj.summary.clarifications %}
+                                            <p><strong>Clarifications:</strong></p>
+                                            <ul>{% for clarification in caseObj.summary.clarifications %}<li>{{ clarification }}</li>{% endfor %}</ul>
+                                        {% endif %}
                                     </div>
+                                </div>
+                                <div class="tab-pane fade" id="combined{{ caseObj.case_num }}" role="tabpanel">
+                                    <div class="diff-output">{{ caseObj.diff }}</div>
+                                </div>
+                                <div class="tab-pane fade" id="resident{{ caseObj.case_num }}" role="tabpanel">
+                                    <div class="diff-output"><pre>{{ caseObj.resident_report }}</pre></div>
+                                </div>
+                                <div class="tab-pane fade" id="attending{{ caseObj.case_num }}" role="tabpanel">
+                                    <div class="diff-output"><pre>{{ caseObj.attending_report }}</pre></div>
                                 </div>
                             </div>
                             <hr>
