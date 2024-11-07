@@ -76,6 +76,8 @@ def get_summary(case_text, custom_prompt, case_number):
             max_tokens=2000,
             temperature=0.5
         )
+        # Log response for debugging
+        print(f"Response for case {case_number}: {response.choices[0].message['content']}")
         return json.loads(response.choices[0].message['content'])
     except Exception as e:
         print(f"Error processing case {case_number}: {str(e)}")
@@ -83,7 +85,7 @@ def get_summary(case_text, custom_prompt, case_number):
 
 # Process cases for summaries
 def process_cases(bulk_text, custom_prompt):
-    case_numbers = re.findall(r"Case (\d+)", bulk_text)
+    case_numbers = re.findall(r"Case (\\d+)", bulk_text)
     cases = bulk_text.split("Case")
     structured_output = []
 
@@ -93,20 +95,20 @@ def process_cases(bulk_text, custom_prompt):
             attending_report = case.split("Attending Report:")[1].split("Resident Report:")[0].strip()
             resident_report = case.split("Resident Report:")[1].strip()
             case_text = f"Resident Report: {resident_report}\nAttending Report: {attending_report}"
-            parsed_json = get_summary(case_text, custom_prompt, case_number=case_number)
+            parsed_json = get_summary(case_text, custom_prompt, case_number=case_number) or {}
             parsed_json['score'] = len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', []))
             structured_output.append(parsed_json)
     return structured_output
 
 # Extract cases and add AI summary tab
 def extract_cases(text, custom_prompt):
-    cases = re.split(r'\bCase\s+(\d+)', text, flags=re.IGNORECASE)
+    cases = re.split(r'\\bCase\\s+(\\d+)', text, flags=re.IGNORECASE)
     parsed_cases = []
 
     for i in range(1, len(cases), 2):
         case_num = cases[i]
         case_content = cases[i + 1].strip()
-        reports = re.split(r'\s*(Attending\s+Report\s*:|Resident\s+Report\s*:)\s*', case_content, flags=re.IGNORECASE)
+        reports = re.split(r'\\s*(Attending\\s+Report\\s*:|Resident\\s+Report\\s*):\\s*', case_content, flags=re.IGNORECASE)
 
         if len(reports) >= 3:
             attending_report = reports[2].strip()
@@ -311,3 +313,4 @@ def index():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
