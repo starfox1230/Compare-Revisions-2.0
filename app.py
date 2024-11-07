@@ -3,7 +3,7 @@ import difflib
 import re
 import os
 import json
-import openai
+from openai import OpenAI
 
 app = Flask(__name__)
 
