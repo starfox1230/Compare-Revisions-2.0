@@ -31,27 +31,26 @@ Respond in this JSON format, with no other additional text or pleasantries:
   "score": <score>
 }"""
 
-# Normalize text: trim spaces but keep returns (newlines) intact
 def normalize_text(text):
     return "\n".join([line.strip() for line in text.splitlines() if line.strip()])
-# Remove "attending review" lines for comparison purposes
+
 def remove_attending_review_line(text):
     excluded_lines = [
         "As the attending physician, I have personally reviewed the images, interpreted and/or supervised the study or procedure, and agree with the wording of the above report.",
         "As the Attending radiologist, I have personally reviewed the images, interpreted the study, and agree with the wording of the above report by Sterling M. Jones"
     ]
     return "\n".join([line for line in text.splitlines() if line.strip() not in excluded_lines])
-# Extract sections by headers ending with a colon
+
 def extract_sections(text):
     pattern = r'(.*?:)(.*?)(?=(?:\n.*?:)|\Z)'
     matches = re.findall(pattern, text, flags=re.DOTALL)
     sections = [{'header': header.strip(), 'content': content.strip()} for header, content in matches]
     return sections
-# Calculate percentage change between two reports
+
 def calculate_change_percentage(resident_text, attending_text):
     matcher = difflib.SequenceMatcher(None, resident_text.split(), attending_text.split())
     return round((1 - matcher.ratio()) * 100, 2)
-# Compare reports section by section
+
 def create_diff_by_section(resident_text, attending_text):
     resident_text = normalize_text(resident_text)
     attending_text = normalize_text(remove_attending_review_line(attending_text))
@@ -76,10 +75,9 @@ def create_diff_by_section(resident_text, attending_text):
                 section_diff += f'<span style="color:lightgreen;">{" ".join(att_content.split()[b1:b2])}</span> '
         diff_html += f"{res_header}<br>{section_diff}<br><br>"
     return diff_html
-# AI function to get a structured JSON summary of report differences
+
 def get_summary(case_text, custom_prompt, case_number):
     try:
-        # Use the updated OpenAI ChatCompletion API
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -89,14 +87,11 @@ def get_summary(case_text, custom_prompt, case_number):
             max_tokens=2000,
             temperature=0.5
         )
-        # Capture and parse response content as JSON
         response_content = response.choices[0].message.content
-        print(f"Response for case {case_number}: {response_content}")  # Log for debugging
         return json.loads(response_content)
     except Exception as e:
-        print(f"Error processing case {case_number}: {str(e)}")
         return {"case_number": case_number, "error": "Error processing AI"}
-# Process cases for summaries
+
 def process_cases(bulk_text, custom_prompt):
     case_numbers = re.findall(r"Case (\d+)", bulk_text)
     cases = bulk_text.split("Case")
@@ -111,7 +106,7 @@ def process_cases(bulk_text, custom_prompt):
             parsed_json['score'] = len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', []))
             structured_output.append(parsed_json)
     return structured_output
-# Extract cases and add AI summary tab
+
 def extract_cases(text, custom_prompt):
     cases = re.split(r'\bCase\s+(\d+)', text, flags=re.IGNORECASE)
     parsed_cases = []
@@ -133,16 +128,6 @@ def extract_cases(text, custom_prompt):
             })
     return parsed_cases
 
-# Sort case data based on sorting option
-def sort_cases(case_data, sort_option):
-    if sort_option == "case_number":
-        case_data.sort(key=lambda x: int(x['case_num']))
-    elif sort_option == "percentage_change":
-        case_data.sort(key=lambda x: x['percentage_change'], reverse=True)
-    elif sort_option == "summary_score":
-        case_data.sort(key=lambda x: x['summary']['score'] if x['summary'] else 0, reverse=True)
-    return case_data
-
 @app.route('/', methods=['GET', 'POST'])
 def index():
     custom_prompt = request.form.get('custom_prompt', DEFAULT_PROMPT)
@@ -152,7 +137,6 @@ def index():
     if request.method == 'POST':
         text_block = request.form['report_text']
         case_data = extract_cases(text_block, custom_prompt)
-        case_data = sort_cases(case_data, sort_option)
 
     template = """
 <html>
@@ -160,67 +144,16 @@ def index():
         <title>Radiology Report Diff & Summarizer</title>
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
         <style>
-            body {
-                background-color: #1e1e1e;
-                color: #dcdcdc;
-                font-family: Arial, sans-serif;
-            }
-            textarea, input, button {
-                background-color: #333333;
-                color: #dcdcdc;
-                border: 1px solid #555;
-            }
-            /* Restored night mode styles for text boxes */
-            textarea {
-                background-color: #333333 !important;
-                color: #dcdcdc !important;
-                border: 1px solid #555 !important;
-            }
-            h2, h3, h4 {
-                color: #f0f0f0;
-                font-weight: normal;
-            }
-            .diff-output, .summary-output {
-                margin-top: 20px;
-                padding: 15px;
-                background-color: #2e2e2e;
-                border-radius: 8px;
-                border: 1px solid #555;
-                white-space: normal;
-            }
-            /* Added styling to prevent horizontal scrolling */
-            pre {
-                white-space: pre-wrap;
-                word-wrap: break-word;
-                font-family: inherit; /* Use same font as the combined report */
-            }
-            .nav-tabs .nav-link {
-                background-color: #333;
-                border-color: #555;
-                color: #dcdcdc;
-            }
-            .nav-tabs .nav-link.active {
-                background-color: #007bff;
-                border-color: #007bff #007bff #333;
-                color: white;
-            }
-            #scrollToTopBtn {
-                position: fixed;
-                right: 30px;
-                bottom: 30px;
-                background-color: #007bff;
-                color: white;
-                padding: 10px 20px;
-                border-radius: 50px;
-                border: none;
-                cursor: pointer;
-                box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
-                font-size: 14px;
-                display: none;
-            }
-            #scrollToTopBtn:hover {
-                background-color: #0056b3;
-            }
+            body { background-color: #1e1e1e; color: #dcdcdc; font-family: Arial, sans-serif; }
+            textarea, input, button { background-color: #333333; color: #dcdcdc; border: 1px solid #555; }
+            textarea { background-color: #333333 !important; color: #dcdcdc !important; border: 1px solid #555 !important; }
+            h2, h3, h4 { color: #f0f0f0; font-weight: normal; }
+            .diff-output, .summary-output { margin-top: 20px; padding: 15px; background-color: #2e2e2e; border-radius: 8px; border: 1px solid #555; }
+            pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; }
+            .nav-tabs .nav-link { background-color: #333; border-color: #555; color: #dcdcdc; }
+            .nav-tabs .nav-link.active { background-color: #007bff; border-color: #007bff #007bff #333; color: white; }
+            #scrollToTopBtn { position: fixed; right: 30px; bottom: 30px; background-color: #007bff; color: white; padding: 10px 20px; border-radius: 50px; border: none; cursor: pointer; display: none; }
+            #scrollToTopBtn:hover { background-color: #0056b3; }
         </style>
     </head>
     <body>
@@ -244,109 +177,68 @@ def index():
                     <button type="button" class="btn btn-secondary" onclick="sortCases('percentage_change')">Sort by Percentage Change</button>
                     <button type="button" class="btn btn-secondary" onclick="sortCases('summary_score')">Sort by Summary Score</button>
                 </div>
-                <ul>
-                    {% for case in case_data %}
-                        <li>
-                            <a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a> - {{ case.percentage_change }}% change - Score: {{ case.summary.score if case.summary else 'N/A' }}
-                        </li>
-                    {% endfor %}
-                </ul>
-                <hr>
-                {% for case in case_data %}
-                    <div id="case{{ case.case_num }}">
-                        <h4>Case {{ case.case_num }} - {{ case.percentage_change }}% change</h4>
-                        <ul class="nav nav-tabs" id="myTab{{ case.case_num }}" role="tablist">
-                            <li class="nav-item" role="presentation">
-                                <button class="nav-link active" id="combined-tab{{ case.case_num }}" data-bs-toggle="tab" data-bs-target="#combined{{ case.case_num }}" type="button" role="tab" aria-controls="combined{{ case.case_num }}" aria-selected="true">Combined Report</button>
-                            </li>
-                            <li class="nav-item" role="presentation">
-                                <button class="nav-link" id="resident-tab{{ case.case_num }}" data-bs-toggle="tab" data-bs-target="#resident{{ case.case_num }}" type="button" role="tab" aria-controls="resident{{ case.case_num }}" aria-selected="false">Resident Report</button>
-                            </li>
-                            <li class="nav-item" role="presentation">
-                                <button class="nav-link" id="attending-tab{{ case.case_num }}" data-bs-toggle="tab" data-bs-target="#attending{{ case.case_num }}" type="button" role="tab" aria-controls="attending{{ case.case_num }}" aria-selected="false">Attending Report</button>
-                            </li>
-                            <li class="nav-item" role="presentation">
-                                <button class="nav-link" id="summary-tab{{ case.case_num }}" data-bs-toggle="tab" data-bs-target="#summary{{ case.case_num }}" type="button" role="tab" aria-controls="summary{{ case.case_num }}" aria-selected="false">Summary Report</button>
-                            </li>
-                        </ul>
-                        <div class="tab-content" id="myTabContent{{ case.case_num }}">
-                            <div class="tab-pane fade show active" id="combined{{ case.case_num }}" role="tabpanel" aria-labelledby="combined-tab{{ case.case_num }}">
-                                <div class="diff-output">
-                                    {{ case.diff|safe }}
-                                </div>
-                            </div>
-                            <div class="tab-pane fade" id="resident{{ case.case_num }}" role="tabpanel" aria-labelledby="resident-tab{{ case.case_num }}">
-                                <div class="diff-output">
-                                    <pre>{{ case.resident_report }}</pre>
-                                </div>
-                            </div>
-                            <div class="tab-pane fade" id="attending{{ case.case_num }}" role="tabpanel" aria-labelledby="attending-tab{{ case.case_num }}">
-                                <div class="diff-output">
-                                    <pre>{{ case.attending_report }}</pre>
-                                </div>
-                            </div>
-                            <div class="tab-pane fade" id="summary{{ case.case_num }}" role="tabpanel" aria-labelledby="summary-tab{{ case.case_num }}">
-                                <div class="summary-output">
-                                    {% if case.summary %}
-                                        <p><strong>Score:</strong> {{ case.summary.score }}</p>
-                                        {% if case.summary.major_findings %}
-                                            <p><strong>Major Findings:</strong></p>
-                                            <ul>
-                                                {% for finding in case.summary.major_findings %}
-                                                    <li>{{ finding }}</li>
-                                                {% endfor %}
-                                            </ul>
-                                        {% endif %}
-                                        {% if case.summary.minor_findings %}
-                                            <p><strong>Minor Findings:</strong></p>
-                                            <ul>
-                                                {% for finding in case.summary.minor_findings %}
-                                                    <li>{{ finding }}</li>
-                                                {% endfor %}
-                                            </ul>
-                                        {% endif %}
-                                        {% if case.summary.clarifications %}
-                                            <p><strong>Clarifications:</strong></p>
-                                            <ul>
-                                                {% for clarification in case.summary.clarifications %}
-                                                    <li>{{ clarification }}</li>
-                                                {% endfor %}
-                                            </ul>
-                                        {% endif %}
-                                    {% else %}
-                                        <p><em>No AI Summary available.</em></p>
-                                    {% endif %}
-                                </div>
-                            </div>
-                        </div>
-                        <hr>
-                    </div>
-                {% endfor %}
+                <div id="caseContainer">
+                    <!-- JavaScript will populate cases here dynamically -->
+                </div>
             {% endif %}
         </div>
-        <button id="scrollToTopBtn">Top</button>
         <script>
+            let caseData = {{ case_data | tojson }};
             function sortCases(option) {
-                const form = document.getElementById('reportForm');
-                const sortInput = document.createElement('input');
-                sortInput.type = 'hidden';
-                sortInput.name = 'sort_option';
-                sortInput.value = option;
-                form.appendChild(sortInput);
-                form.submit();
-            }
-            var mybutton = document.getElementById("scrollToTopBtn");
-            window.onscroll = function() {
-                if (document.body.scrollTop > 20 || document.documentElement.scrollTop > 20) {
-                    mybutton.style.display = "block";
-                } else {
-                    mybutton.style.display = "none";
+                if (option === "case_number") {
+                    caseData.sort((a, b) => parseInt(a.case_num) - parseInt(b.case_num));
+                } else if (option === "percentage_change") {
+                    caseData.sort((a, b) => b.percentage_change - a.percentage_change);
+                } else if (option === "summary_score") {
+                    caseData.sort((a, b) => (b.summary?.score || 0) - (a.summary?.score || 0));
                 }
-            };
-            mybutton.onclick = function() {
-                document.body.scrollTop = 0;
-                document.documentElement.scrollTop = 0;
-            };
+                displayCases();
+            }
+
+            function displayCases() {
+                const container = document.getElementById('caseContainer');
+                container.innerHTML = '';
+                caseData.forEach(caseObj => {
+                    container.innerHTML += `
+                        <div id="case${caseObj.case_num}">
+                            <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
+                            <ul class="nav nav-tabs" id="myTab${caseObj.case_num}" role="tablist">
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link active" id="combined-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#combined${caseObj.case_num}" type="button" role="tab">Combined Report</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="resident-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#resident${caseObj.case_num}" type="button" role="tab">Resident Report</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="attending-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#attending${caseObj.case_num}" type="button" role="tab">Attending Report</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="summary-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#summary${caseObj.case_num}" type="button" role="tab">Summary Report</button>
+                                </li>
+                            </ul>
+                            <div class="tab-content" id="myTabContent${caseObj.case_num}">
+                                <div class="tab-pane fade show active" id="combined${caseObj.case_num}" role="tabpanel">
+                                    <div class="diff-output">${caseObj.diff}</div>
+                                </div>
+                                <div class="tab-pane fade" id="resident${caseObj.case_num}" role="tabpanel">
+                                    <div class="diff-output"><pre>${caseObj.resident_report}</pre></div>
+                                </div>
+                                <div class="tab-pane fade" id="attending${caseObj.case_num}" role="tabpanel">
+                                    <div class="diff-output"><pre>${caseObj.attending_report}</pre></div>
+                                </div>
+                                <div class="tab-pane fade" id="summary${caseObj.case_num}" role="tabpanel">
+                                    <div class="summary-output">
+                                        <p><strong>Score:</strong> ${caseObj.summary?.score || 'N/A'}</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <hr>
+                        </div>
+                    `;
+                });
+            }
+
+            document.addEventListener("DOMContentLoaded", displayCases);
         </script>
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     </body>
