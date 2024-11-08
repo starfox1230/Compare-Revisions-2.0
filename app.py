@@ -12,15 +12,15 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Default customized prompt
 DEFAULT_PROMPT = """Succinctly organize the changes made by the attending to the resident's radiology reports into: 
-1) missed major findings (life threatening or treatment altering), 
-2) missed minor findings, and 
-3) clarified descriptions of findings. 
+1) missed major findings (only findings that fit under these categories: retained sponge or other clinically significant foreign body, new unexpected clinically significant mass or tumor with potential immediate clinical consequences, malpositioned line or tube of immediate clinical concern, allergic reaction resulting in a code, previously undiagnosed life-threatening hemorrhage or vascular disruption, necrotizing fasciitis, unexpected or previously undiagnosed free air or active leakage from the GI tract, ectopic pregnancy, intestinal ischemia or portomesenteric gas, ovarian torsion, testicular torsion, placental abruption, newly diagnosed absent perfusion in a postoperative transplant, new renal collecting system obstruction with signs of infection, acute cholecystitis (outpatient only), unexpected and clinically significant intracranial hemorrhage, new midline shift, clinically significant herniation, new unexpected cerebral infarction, abscess or meningoencephalitis, acute airway compromise, new clinically significant unexpected abscess or discitis, new clinically significant unexpected hemorrhage, new unexpected clinically significant cord compression or unstable spine fracture or transection, acute cord hemorrhage or infarct, unexpected clinically significant pneumothorax, new large pericardial effusion, findings suggestive of active TB, impending pathologic fracture, new unexpected clinically significant fracture, newly diagnosed absent perfusion in a postoperative kidney, brain death with transplant team waiting for results, new high probability ventilation/perfusion (VQ) lung scan, new clinically significant unexpected arterial dissection or occlusion, previously undiagnosed acute thrombotic or embolic event including DVT and pulmonary thromboembolism, and previously undiagnosed clinically significant aneurysm or vascular disruption), 
+2) missed minor findings (this includes all other pathologies not in the above list that were not seen by the resident), and 
+3) clarified descriptions of findings (this includes findings removed by the attending, findings re-worded by the attending, etc). 
 Assume the attending's version was correct, and anything not included by the attending but was included by the resident should have been left out by the resident. Keep your answers brief and to the point. The reports are: 
 Please output your response as structured JSON, with the following keys:
 - "case_number": The case number sent in the request.
-- "major_findings": A list of any major findings missed by the resident (life-threatening or treatment-altering).
-- "minor_findings": A list of minor findings missed by the resident.
-- "clarifications": A list of any clarifications the attending made to improve understanding.
+- "major_findings": A list of any major findings missed by the resident (as described above).
+- "minor_findings": A list of minor findings missed by the resident (as described above).
+- "clarifications": A list of any clarifications the attending made (as described above).
 - "score": The calculated score, where each major finding is worth 3 points and each minor finding is worth 1 point.
 Respond in this JSON format, with no other additional text or pleasantries:
 {
