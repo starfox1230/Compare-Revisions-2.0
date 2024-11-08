@@ -129,7 +129,7 @@ def create_diff_by_section(resident_text, attending_text):
 def get_summary(case_text, custom_prompt, case_number):
     try:
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that outputs structured JSON summaries of radiology report differences."},
                 {"role": "user", "content": f"{custom_prompt}\nCase Number: {case_number}\n{case_text}"}
