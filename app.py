@@ -241,7 +241,7 @@ def index():
                     {% for case in case_data %}
                         {% if case.summary and case.summary.major_findings %}
                             {% for finding in case.summary.major_findings %}
-                                <li>- <a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
+                                <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
                             {% endfor %}
                         {% endif %}
                     {% endfor %}
@@ -252,7 +252,7 @@ def index():
                     {% for case in case_data %}
                         {% if case.summary and case.summary.minor_findings %}
                             {% for finding in case.summary.minor_findings %}
-                                <li>- <a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
+                                <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
                             {% endfor %}
                         {% endif %}
                     {% endfor %}
