@@ -203,19 +203,22 @@ def index():
             pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; }
             .nav-tabs .nav-link { background-color: #333; border-color: #555; color: #dcdcdc; }
             .nav-tabs .nav-link.active { background-color: #007bff; border-color: #007bff #007bff #333; color: white; }
+            /* Added CSS for the scroll-to-top button */
             #scrollToTopBtn {
                 position: fixed;
-                right: 30px;
-                bottom: 30px;
+                right: 20px;
+                bottom: 20px;
                 background-color: #007bff;
                 color: white;
-                padding: 10px 20px;
-                border-radius: 50px;
+                padding: 10px 15px;
+                border-radius: 50%;
                 border: none;
                 cursor: pointer;
-                display: none;
+                z-index: 1000;
             }
-            #scrollToTopBtn:hover { background-color: #0056b3; }
+            #scrollToTopBtn:hover {
+                background-color: #0056b3;
+            }
         </style>
     </head>
     <body>
@@ -266,6 +269,7 @@ def index():
             {% endif %}
         </div>
 
+        <!-- Added scroll-to-top button -->
         <button id="scrollToTopBtn" onclick="scrollToTop()">⬆</button>
 
         <script>
@@ -344,15 +348,7 @@ def index():
                 displayNavigation();
             });
 
-            window.onscroll = function() {
-                const scrollBtn = document.getElementById('scrollToTopBtn');
-                if (document.documentElement.scrollTop > 200) {
-                    scrollBtn.style.display = 'block';
-                } else {
-                    scrollBtn.style.display = 'none';
-                }
-            };
-
+            // Added scrollToTop function
             function scrollToTop() {
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             }
