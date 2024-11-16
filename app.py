@@ -49,6 +49,7 @@ def extract_sections(text):
     matches = re.findall(pattern, text, flags=re.DOTALL)
     sections = [{'header': header.strip(), 'content': content.strip()} for header, content in matches]
     return sections
+
 # Calculate percentage change between two reports
 def calculate_change_percentage(resident_text, attending_text):
     matcher = difflib.SequenceMatcher(None, resident_text.split(), attending_text.split())
@@ -59,6 +60,7 @@ def split_into_paragraphs(text):
     # Split the text into paragraphs based on double line breaks or single line breaks after punctuation
     paragraphs = re.split(r'\n{2,}|\n(?=\w)', text)
     return [para.strip() for para in paragraphs if para.strip()]
+
 def create_diff_by_section(resident_text, attending_text):
     # Normalize text for comparison
     resident_text = normalize_text(resident_text)
@@ -67,7 +69,9 @@ def create_diff_by_section(resident_text, attending_text):
     # Split text into paragraphs instead of sentences
     resident_paragraphs = split_into_paragraphs(resident_text)
     attending_paragraphs = split_into_paragraphs(attending_text)
+
     diff_html = ""
+
     # Use SequenceMatcher on the paragraph level first
     matcher = difflib.SequenceMatcher(None, resident_paragraphs, attending_paragraphs)
     for opcode, a1, a2, b1, b2 in matcher.get_opcodes():
@@ -75,14 +79,17 @@ def create_diff_by_section(resident_text, attending_text):
         if opcode == 'equal':
             for paragraph in resident_paragraphs[a1:a2]:
                 diff_html += paragraph + "<br><br>"
+
         # Handle inserted paragraphs as a block
         elif opcode == 'insert':
             for paragraph in attending_paragraphs[b1:b2]:
                 diff_html += f'<div style="color:lightgreen;">[Inserted: {paragraph}]</div><br><br>'
+
         # Handle deleted paragraphs as a block
         elif opcode == 'delete':
             for paragraph in resident_paragraphs[a1:a2]:
                 diff_html += f'<div style="color:#ff6b6b;text-decoration:line-through;">[Deleted: {paragraph}]</div><br><br>'
+
         # Handle paragraph replacements by word-by-word comparison within each paragraph
         elif opcode == 'replace':
             res_paragraphs = resident_paragraphs[a1:a2]
@@ -113,7 +120,9 @@ def create_diff_by_section(resident_text, attending_text):
                             " ".join(att_paragraph.split()[w_b1:w_b2]) +
                             '</span> '
                         )
+
                 diff_html += "<br><br>"  # Separate each replaced paragraph with line breaks
+
     return diff_html
 
 # AI function to get a structured JSON summary of report differences
@@ -148,6 +157,7 @@ def process_cases(bulk_text, custom_prompt):
             parsed_json['score'] = len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', []))
             structured_output.append(parsed_json)
     return structured_output
+
 # Extract cases and add AI summary tab
 def extract_cases(text, custom_prompt):
     cases = re.split(r'\bCase\s+(\d+)', text, flags=re.IGNORECASE)
@@ -193,7 +203,18 @@ def index():
             pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; }
             .nav-tabs .nav-link { background-color: #333; border-color: #555; color: #dcdcdc; }
             .nav-tabs .nav-link.active { background-color: #007bff; border-color: #007bff #007bff #333; color: white; }
-            #scrollToTopBtn { position: fixed; right: 30px; bottom: 30px; background-color: #007bff; color: white; padding: 10px 20px; border-radius: 50px; border: none; cursor: pointer; display: none; }
+            #scrollToTopBtn {
+                position: fixed;
+                right: 30px;
+                bottom: 30px;
+                background-color: #007bff;
+                color: white;
+                padding: 10px 20px;
+                border-radius: 50px;
+                border: none;
+                cursor: pointer;
+                display: none;
+            }
             #scrollToTopBtn:hover { background-color: #0056b3; }
         </style>
     </head>
@@ -212,6 +233,28 @@ def index():
                 <button type="submit" class="btn btn-primary">Compare & Summarize Reports</button>
             </form>
             {% if case_data %}
+                <h3>Major Findings Missed</h3>
+                <ul>
+                    {% for case in case_data %}
+                        {% if case.summary and case.summary.major_findings %}
+                            {% for finding in case.summary.major_findings %}
+                                <li>- <a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
+                            {% endfor %}
+                        {% endif %}
+                    {% endfor %}
+                </ul>
+
+                <h3>Minor Findings Missed</h3>
+                <ul>
+                    {% for case in case_data %}
+                        {% if case.summary and case.summary.minor_findings %}
+                            {% for finding in case.summary.minor_findings %}
+                                <li>- <a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
+                            {% endfor %}
+                        {% endif %}
+                    {% endfor %}
+                </ul>
+
                 <h3>Case Navigation</h3>
                 <div class="btn-group" role="group" aria-label="Sort Options">
                     <button type="button" class="btn btn-secondary" onclick="sortCases('case_number')">Sort by Case Number</button>
@@ -222,6 +265,9 @@ def index():
                 <div id="caseContainer"></div>
             {% endif %}
         </div>
+
+        <button id="scrollToTopBtn" onclick="scrollToTop()">⬆</button>
+
         <script>
             let caseData = {{ case_data | tojson }};
             
@@ -292,10 +338,24 @@ def index():
                     `;
                 });
             }
+
             document.addEventListener("DOMContentLoaded", () => {
                 displayCases();
                 displayNavigation();
             });
+
+            window.onscroll = function() {
+                const scrollBtn = document.getElementById('scrollToTopBtn');
+                if (document.documentElement.scrollTop > 200) {
+                    scrollBtn.style.display = 'block';
+                } else {
+                    scrollBtn.style.display = 'none';
+                }
+            };
+
+            function scrollToTop() {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
         </script>
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     </body>
