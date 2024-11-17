@@ -214,6 +214,7 @@ def index():
                         border: none;
                         cursor: pointer;
                         display: none;
+                        z-index: 1000; /* Ensure it's on top */
                 }
                 #scrollToTopBtn:hover { background-color: #0056b3; }
                 a {
