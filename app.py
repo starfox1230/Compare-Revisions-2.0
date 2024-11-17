@@ -195,6 +195,11 @@ def index():
         <title>Radiology Report Diff & Summarizer</title>
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
         <style>
+                html, body {
+                        height: 100%;
+                        overflow-y: auto; /* Ensures vertical scrolling is enabled */
+                        margin: 0; /* Removes any default margin */
+                }
                 body { background-color: #1e1e1e; color: #dcdcdc; font-family: Arial, sans-serif; }
                 textarea, input, button { background-color: #333333; color: #dcdcdc; border: 1px solid #555; }
                 textarea { background-color: #333333 !important; color: #dcdcdc !important; border: 1px solid #555 !important; }
@@ -224,6 +229,7 @@ def index():
                         color: #3366cc; /* A slightly darker blue when hovering */
                 }
         </style>
+
 
     </head>
     <body>
