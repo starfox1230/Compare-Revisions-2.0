@@ -279,7 +279,7 @@ def index():
             {% endif %}
         </div>
         <!-- Added scroll-to-top button -->
-        <button id="scrollToTopBtn" onclick="scrollToTop()">⬆</button>
+        <button id="scrollToTopBtn" onclick="scrollToTop()">Top ⬆</button>
         <script>
             let caseData = {{ case_data | tojson }};
             
