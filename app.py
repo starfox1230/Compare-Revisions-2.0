@@ -213,7 +213,7 @@ def index():
                         border-radius: 50px;
                         border: none;
                         cursor: pointer;
-                        display: none;
+                        / display: none; / Made comment because trying to see what happens if I just set it to always display.
                         z-index: 1000; /* Ensure it's on top */
                 }
                 #scrollToTopBtn:hover { background-color: #0056b3; }
