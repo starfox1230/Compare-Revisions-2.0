@@ -195,31 +195,43 @@ def index():
         <title>Radiology Report Diff & Summarizer</title>
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
         <style>
-            body { background-color: #1e1e1e; color: #dcdcdc; font-family: Arial, sans-serif; }
-            textarea, input, button { background-color: #333333; color: #dcdcdc; border: 1px solid #555; }
-            textarea { background-color: #333333 !important; color: #dcdcdc !important; border: 1px solid #555 !important; }
-            h2, h3, h4 { color: #f0f0f0; font-weight: normal; }
-            .diff-output, .summary-output { margin-top: 20px; padding: 15px; background-color: #2e2e2e; border-radius: 8px; border: 1px solid #555; }
-            pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; }
-            .nav-tabs .nav-link { background-color: #333; border-color: #555; color: #dcdcdc; }
-            .nav-tabs .nav-link.active { background-color: #007bff; border-color: #007bff #007bff #333; color: white; }
-            /* Added CSS for the scroll-to-top button */
-            #scrollToTopBtn {
-                position: fixed;
-                right: 20px;
-                bottom: 20px;
-                background-color: #007bff;
-                color: white;
-                padding: 10px 15px;
-                border-radius: 50%;
-                border: none;
-                cursor: pointer;
-                z-index: 1000;
-            }
-            #scrollToTopBtn:hover {
-                background-color: #0056b3;
-            }
+                body { background-color: #1e1e1e; color: #dcdcdc; font-family: Arial, sans-serif; }
+                textarea, input, button { background-color: #333333; color: #dcdcdc; border: 1px solid #555; }
+                textarea { background-color: #333333 !important; color: #dcdcdc !important; border: 1px solid #555 !important; }
+                h2, h3, h4 { color: #f0f0f0; font-weight: normal; }
+                .diff-output, .summary-output { margin-top: 20px; padding: 15px; background-color: #2e2e2e; border-radius: 8px; border: 1px solid #555; }
+                pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; }
+                .nav-tabs .nav-link { background-color: #333; border-color: #555; color: #dcdcdc; }
+                .nav-tabs .nav-link.active { background-color: #007bff; border-color: #007bff #007bff #333; color: white; }
+
+                /* Scroll-to-top button */
+                #scrollToTopBtn {
+                        position: fixed;
+                        right: 20px;
+                        bottom: 20px;
+                        background-color: #007bff;
+                        color: white;
+                        padding: 10px 15px;
+                        border-radius: 50%;
+                        border: none;
+                        cursor: pointer;
+                        z-index: 1000;
+                }
+                #scrollToTopBtn:hover {
+                        background-color: #0056b3;
+                }
+
+                /* Links styling for night mode */
+                a {
+                        color: #66ccff; /* A softer blue that is easier on the eyes in night mode */
+                        text-decoration: none; /* Removes underline */
+                }
+                a:hover {
+                        color: #99e6ff; /* A lighter blue for hover state */
+                        text-decoration: none; /* Ensures no underline on hover */
+                }
         </style>
+
     </head>
     <body>
         <div class="container">
