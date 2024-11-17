@@ -195,35 +195,30 @@ def index():
         <title>Radiology Report Diff & Summarizer</title>
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
         <style>
-                body { background-color: #1e1e1e; color: #dcdcdc; font-family: Arial, sans-serif; }
-                textarea, input, button { background-color: #333333; color: #dcdcdc; border: 1px solid #555; }
-                textarea { background-color: #333333 !important; color: #dcdcdc !important; border: 1px solid #555 !important; }
-                h2, h3, h4 { color: #f0f0f0; font-weight: normal; }
-                .diff-output, .summary-output { margin-top: 20px; padding: 15px; background-color: #2e2e2e; border-radius: 8px; border: 1px solid #555; }
-                pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; }
-                .nav-tabs .nav-link { background-color: #333; border-color: #555; color: #dcdcdc; }
-                .nav-tabs .nav-link.active { background-color: #007bff; border-color: #007bff #007bff #333; color: white; }
-                #scrollToTopBtn {
-                        position: fixed;
-                        right: 30px;
-                        bottom: 30px;
-                        background-color: #007bff;
-                        color: white;
-                        padding: 10px 20px;
-                        border-radius: 50px;
-                        border: none;
-                        cursor: pointer;
-                        / display: none; / Made comment because trying to see what happens if I just set it to always display.
-                        z-index: 1000; /* Ensure it's on top */
-                }
-                #scrollToTopBtn:hover { background-color: #0056b3; }
-                a {
-                        text-decoration: none; /* Removes the underline */
-                        color: #6699ff; /* A softer blue for night mode */
-                }
-                a:hover {
-                        color: #3366cc; /* A slightly darker blue when hovering */
-                }
+            body { background-color: #1e1e1e; color: #dcdcdc; font-family: Arial, sans-serif; }
+            textarea, input, button { background-color: #333333; color: #dcdcdc; border: 1px solid #555; }
+            textarea { background-color: #333333 !important; color: #dcdcdc !important; border: 1px solid #555 !important; }
+            h2, h3, h4 { color: #f0f0f0; font-weight: normal; }
+            .diff-output, .summary-output { margin-top: 20px; padding: 15px; background-color: #2e2e2e; border-radius: 8px; border: 1px solid #555; }
+            pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; }
+            .nav-tabs .nav-link { background-color: #333; border-color: #555; color: #dcdcdc; }
+            .nav-tabs .nav-link.active { background-color: #007bff; border-color: #007bff #007bff #333; color: white; }
+            /* Added CSS for the scroll-to-top button */
+            #scrollToTopBtn {
+                position: fixed;
+                right: 20px;
+                bottom: 20px;
+                background-color: #007bff;
+                color: white;
+                padding: 10px 15px;
+                border-radius: 50%;
+                border: none;
+                cursor: pointer;
+                z-index: 1000;
+            }
+            #scrollToTopBtn:hover {
+                background-color: #0056b3;
+            }
         </style>
     </head>
     <body>
@@ -273,7 +268,6 @@ def index():
         </div>
         <!-- Added scroll-to-top button -->
         <button id="scrollToTopBtn" onclick="scrollToTop()">⬆</button>
-        
         <script>
             let caseData = {{ case_data | tojson }};
             
@@ -348,16 +342,7 @@ def index():
                 displayCases();
                 displayNavigation();
             });
-            // Scroll-to-top functionality
-            window.onscroll = function() {
-                const scrollBtn = document.getElementById('scrollToTopBtn');
-                if (document.documentElement.scrollTop > 200) {
-                    scrollBtn.style.display = 'block';
-                } else {
-                    scrollBtn.style.display = 'none';
-                }
-            };
-
+            // Added scrollToTop function
             function scrollToTop() {
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             }
