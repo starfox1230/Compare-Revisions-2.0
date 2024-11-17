@@ -272,6 +272,7 @@ def index():
         </div>
         <!-- Added scroll-to-top button -->
         <button id="scrollToTopBtn" onclick="scrollToTop()">⬆</button>
+        
         <script>
             let caseData = {{ case_data | tojson }};
             
@@ -346,10 +347,6 @@ def index():
                 displayCases();
                 displayNavigation();
             });
-            // Added scrollToTop function
-            function scrollToTop() {
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-            }
             // Scroll-to-top functionality
             window.onscroll = function() {
                 const scrollBtn = document.getElementById('scrollToTopBtn');
