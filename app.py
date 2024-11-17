@@ -212,7 +212,7 @@ def index():
                         background-color: #007bff;
                         color: white;
                         padding: 10px 15px;
-                        border-radius: 50%;
+                        border-radius: 15px;
                         border: none;
                         cursor: pointer;
                         z-index: 1000;
