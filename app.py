@@ -248,7 +248,7 @@ def index():
                 <button type="submit" class="btn btn-primary">Compare & Summarize Reports</button>
             </form>
             {% if case_data %}
-                <h3>Major Findings Missed</h3>
+                <h3 id="majorFindings">Major Findings Missed</h3>
                 <ul>
                     {% for case in case_data %}
                         {% if case.summary and case.summary.major_findings %}
@@ -356,7 +356,10 @@ def index():
             });
             // Added scrollToTop function
             function scrollToTop() {
-                window.scrollTo({ top: 0, behavior: 'smooth' });
+                const majorFindingsSection = document.getElementById('majorFindings');
+                if (majorFindingsSection) {
+                    majorFindingsSection.scrollIntoView({ behavior: 'smooth' });
+                }
             }
         </script>
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
