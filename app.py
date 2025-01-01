@@ -90,12 +90,11 @@ def create_diff_by_section(resident_text, attending_text):
             for paragraph in resident_paragraphs[a1:a2]:
                 diff_html += f'<div style="color:#ff6b6b;text-decoration:line-through;">[Deleted: {paragraph}]</div><br><br>'
 
-        # Handle paragraph replacements by word-by-word comparison within each paragraph
+        # Handle paragraph replacements by word-by-word comparison
         elif opcode == 'replace':
             res_paragraphs = resident_paragraphs[a1:a2]
             att_paragraphs = attending_paragraphs[b1:b2]
             for res_paragraph, att_paragraph in zip(res_paragraphs, att_paragraphs):
-                # Compare the words within the mismatched paragraphs
                 word_matcher = difflib.SequenceMatcher(None, res_paragraph.split(), att_paragraph.split())
                 for word_opcode, w_a1, w_a2, w_b1, w_b2 in word_matcher.get_opcodes():
                     if word_opcode == 'equal':
@@ -121,7 +120,7 @@ def create_diff_by_section(resident_text, attending_text):
                             '</span> '
                         )
 
-                diff_html += "<br><br>"  # Separate each replaced paragraph with line breaks
+                diff_html += "<br><br>"  # line breaks between replaced paragraphs
 
     return diff_html
 
@@ -139,7 +138,7 @@ def get_summary(case_text, custom_prompt, case_number):
         )
         response_content = response.choices[0].message.content
         return json.loads(response_content)
-    except Exception as e:
+    except Exception:
         return {"case_number": case_number, "error": "Error processing AI"}
 
 # Process cases for summaries
@@ -190,11 +189,11 @@ def index():
         case_data = extract_cases(text_block, custom_prompt)
 
     template = """
-    <html>
-        <head>
-            <title>Radiology Report Comparison Tool</title>
-            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
-            <style>
+<html>
+    <head>
+        <title>Radiology Report Diff & Summarizer</title>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
+        <style>
                 body { background-color: #1e1e1e; color: #dcdcdc; font-family: Arial, sans-serif; }
                 textarea, input, button { background-color: #333333; color: #dcdcdc; border: 1px solid #555; }
                 textarea { background-color: #333333 !important; color: #dcdcdc !important; border: 1px solid #555 !important; }
@@ -204,264 +203,252 @@ def index():
                 .nav-tabs .nav-link { background-color: #333; border-color: #555; color: #dcdcdc; }
                 .nav-tabs .nav-link.active { background-color: #007bff; border-color: #007bff #007bff #333; color: white; }
 
-                /* Highlighted Tabs */
-                .nav-tabs .nav-link.highlighted {
-                    border: 2px solid #FFD700; /* Gold border to indicate match */
-                }
-                .nav-tabs .nav-link.active.highlighted {
-                    background-color: #0056b3; /* Darker blue for active highlighted tab */
-                    border: 2px solid #FFD700; /* Gold border */
-                }
-
                 /* Scroll-to-top button */
                 #scrollToTopBtn {
-                    position: fixed;
-                    right: 20px;
-                    bottom: 20px;
-                    background-color: #007bff;
-                    color: white;
-                    padding: 10px 15px;
-                    border-radius: 15px;
-                    border: none;
-                    cursor: pointer;
-                    z-index: 1000;
+                        position: fixed;
+                        right: 20px;
+                        bottom: 20px;
+                        background-color: #007bff;
+                        color: white;
+                        padding: 10px 15px;
+                        border-radius: 15px;
+                        border: none;
+                        cursor: pointer;
+                        z-index: 1000;
                 }
                 #scrollToTopBtn:hover {
-                    background-color: #0056b3;
+                        background-color: #0056b3;
                 }
 
                 /* Links styling for night mode */
                 a {
-                    color: #66ccff; /* A softer blue that is easier on the eyes in night mode */
-                    text-decoration: none; /* Removes underline */
+                        color: #66ccff; /* A softer blue that is easier on the eyes in night mode */
+                        text-decoration: none; /* Removes underline */
                 }
                 a:hover {
-                    color: #99e6ff; /* A lighter blue for hover state */
-                    text-decoration: none; /* Ensures no underline on hover */
+                        color: #99e6ff; /* A lighter blue for hover state */
+                        text-decoration: none; /* Ensures no underline on hover */
                 }
 
-                /* Highlighted Search Terms */
+                /* Highlight for matched search terms */
                 .highlight {
                     background-color: #FFD700;
-                    color: #000000;
+                    color: #000;
                     padding: 0;
                 }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h2 class="mt-4">Compare Revisions & Summarize Reports</h2>
-                <form method="POST" id="reportForm">
-                    <div class="form-group mb-3">
-                        <label for="report_text">Paste your reports block here:</label>
-                        <textarea id="report_text" name="report_text" class="form-control" rows="10">{{ request.form.get('report_text', '') }}</textarea>
-                    </div>
-                    <div class="form-group mb-3">
-                        <label for="custom_prompt">Customize your OpenAI API prompt:</label>
-                        <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="5">{{ custom_prompt }}</textarea>
-                    </div>
-                    <button type="submit" class="btn btn-primary">Compare & Summarize Reports</button>
-                </form>
-                
-                {% if case_data %}
-                    <!-- Search Bar -->
-                    <div class="form-group mt-4">
-                        <label for="searchBar">Search Reports:</label>
-                        <input type="text" id="searchBar" class="form-control" placeholder="Enter search term...">
-                    </div>
+        </style>
 
-                    <!-- Major Findings -->
-                    <h3 id="majorFindings" class="mt-4">Major Findings Missed</h3>
-                    <ul>
-                        {% for case in case_data %}
-                            {% if case.summary and case.summary.major_findings %}
-                                {% for finding in case.summary.major_findings %}
-                                    <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
-                                {% endfor %}
-                            {% endif %}
-                        {% endfor %}
-                    </ul>
+    </head>
+    <body>
+        <div class="container">
+            <h2 class="mt-4">Compare Revisions & Summarize Reports</h2>
+            <form method="POST" id="reportForm">
+                <div class="form-group mb-3">
+                    <label for="report_text">Paste your reports block here:</label>
+                    <textarea id="report_text" name="report_text" class="form-control" rows="10">{{ request.form.get('report_text', '') }}</textarea>
+                </div>
+                <div class="form-group mb-3">
+                    <label for="custom_prompt">Customize your OpenAI API prompt:</label>
+                    <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="5">{{ custom_prompt }}</textarea>
+                </div>
+                <button type="submit" class="btn btn-primary">Compare & Summarize Reports</button>
+            </form>
 
-                    <!-- Minor Findings -->
-                    <h3>Minor Findings Missed</h3>
-                    <ul>
-                        {% for case in case_data %}
-                            {% if case.summary and case.summary.minor_findings %}
-                                {% for finding in case.summary.minor_findings %}
-                                    <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
-                                {% endfor %}
-                            {% endif %}
-                        {% endfor %}
-                    </ul>
+            {% if case_data %}
+                <!-- Search Bar (Added) -->
+                <div class="form-group mt-4">
+                    <label for="searchBar">Search Reports:</label>
+                    <input type="text" id="searchBar" class="form-control" placeholder="Enter search term...">
+                </div>
 
-                    <!-- Sort Options -->
-                    <h3>Case Navigation</h3>
-                    <div class="btn-group mb-3" role="group" aria-label="Sort Options">
-                        <button type="button" class="btn btn-secondary" onclick="sortCases('case_number')">Sort by Case Number</button>
-                        <button type="button" class="btn btn-secondary" onclick="sortCases('percentage_change')">Sort by Percentage Change</button>
-                        <button type="button" class="btn btn-secondary" onclick="sortCases('summary_score')">Sort by Summary Score</button>
-                    </div>
-                    <ul id="caseNav"></ul>
+                <h3 id="majorFindings" class="mt-4">Major Findings Missed</h3>
+                <ul>
+                    {% for case in case_data %}
+                        {% if case.summary and case.summary.major_findings %}
+                            {% for finding in case.summary.major_findings %}
+                                <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
+                            {% endfor %}
+                        {% endif %}
+                    {% endfor %}
+                </ul>
+                <h3>Minor Findings Missed</h3>
+                <ul>
+                    {% for case in case_data %}
+                        {% if case.summary and case.summary.minor_findings %}
+                            {% for finding in case.summary.minor_findings %}
+                                <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
+                            {% endfor %}
+                        {% endif %}
+                    {% endfor %}
+                </ul>
+                <h3>Case Navigation</h3>
+                <div class="btn-group" role="group" aria-label="Sort Options">
+                    <button type="button" class="btn btn-secondary" onclick="sortCases('case_number')">Sort by Case Number</button>
+                    <button type="button" class="btn btn-secondary" onclick="sortCases('percentage_change')">Sort by Percentage Change</button>
+                    <button type="button" class="btn btn-secondary" onclick="sortCases('summary_score')">Sort by Summary Score</button>
+                </div>
+                <ul id="caseNav"></ul>
+                <div id="caseContainer"></div>
+            {% endif %}
+        </div>
+        <!-- Added scroll-to-top button -->
+        <button id="scrollToTopBtn" onclick="scrollToTop()">Top ⬆</button>
 
-                    <!-- Cases Container -->
-                    <div id="caseContainer"></div>
-                {% endif %}
-            </div>
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+        <script>
+            let caseData = {{ case_data | tojson }};
+            let currentSearchTerm = '';
 
-            <!-- Scroll-to-top button -->
-            <button id="scrollToTopBtn" onclick="scrollToTop()">Top ⬆</button>
+            function sortCases(option) {
+                if (option === "case_number") {
+                    caseData.sort((a, b) => parseInt(a.case_num) - parseInt(b.case_num));
+                } else if (option === "percentage_change") {
+                    caseData.sort((a, b) => b.percentage_change - a.percentage_change);
+                } else if (option === "summary_score") {
+                    caseData.sort((a, b) => (b.summary && b.summary.score || 0) - (a.summary && a.summary.score || 0));
+                }
+                displayCases();
+                displayNavigation();
+            }
 
-            <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-            <script>
-                let caseData = {{ case_data | tojson }};
-                let currentSearchTerm = '';
+            function displayNavigation() {
+                const nav = document.getElementById('caseNav');
+                nav.innerHTML = '';
+                caseData.forEach(caseObj => {
+                    nav.innerHTML += `
+                        <li>
+                            <a href="#case${caseObj.case_num}">Case ${caseObj.case_num}</a> - ${caseObj.percentage_change}% change - Score: ${(caseObj.summary && caseObj.summary.score) || 'N/A'}
+                        </li>
+                    `;
+                });
+            }
 
-                function sortCases(option) {
-                    if (option === "case_number") {
-                        caseData.sort((a, b) => parseInt(a.case_num) - parseInt(b.case_num));
-                    } else if (option === "percentage_change") {
-                        caseData.sort((a, b) => b.percentage_change - a.percentage_change);
-                    } else if (option === "summary_score") {
-                        caseData.sort((a, b) => (b.summary && b.summary.score || 0) - (a.summary && a.summary.score || 0));
+            // Simple HTML-escape
+            function escapeHTML(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+
+            // Regex-escape
+            function escapeRegExp(string) {
+                return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            }
+
+            // Highlight the search term
+            function highlightText(text, term) {
+                if (!term) return escapeHTML(text);
+                const regex = new RegExp(`(${escapeRegExp(term)})`, 'gi');
+                return escapeHTML(text).replace(regex, '<span class="highlight">$1</span>');
+            }
+
+            function displayCases() {
+                const container = document.getElementById('caseContainer');
+                container.innerHTML = '';
+
+                caseData.forEach(caseObj => {
+                    // Check if this case's Resident or Attending has the current searchTerm
+                    const containsResident = currentSearchTerm
+                        && caseObj.resident_report.toLowerCase().includes(currentSearchTerm.toLowerCase());
+                    const containsAttending = currentSearchTerm
+                        && caseObj.attending_report.toLowerCase().includes(currentSearchTerm.toLowerCase());
+
+                    // If we have a search term and neither version matches, skip displaying this case
+                    if (currentSearchTerm && !containsResident && !containsAttending) {
+                        return;
                     }
-                    displayCases();
-                    displayNavigation();
-                }
 
-                function displayNavigation() {
-                    const nav = document.getElementById('caseNav');
-                    nav.innerHTML = '';
-                    caseData.forEach(caseObj => {
-                        nav.innerHTML += `
-                            <li>
-                                <a href="#case${caseObj.case_num}">Case ${caseObj.case_num}</a> - ${caseObj.percentage_change}% change - Score: ${(caseObj.summary && caseObj.summary.score) || 'N/A'}
-                            </li>
-                        `;
-                    });
-                }
+                    // Highlight the search terms
+                    const highlightedResident = highlightText(caseObj.resident_report, currentSearchTerm);
+                    const highlightedAttending = highlightText(caseObj.attending_report, currentSearchTerm);
 
-                function escapeHTML(text) {
-                    const div = document.createElement('div');
-                    div.textContent = text;
-                    return div.innerHTML;
-                }
-
-                function highlightText(text, term) {
-                    if (!term) return escapeHTML(text);
-                    const regex = new RegExp(`(${escapeRegExp(term)})`, 'gi');
-                    return escapeHTML(text).replace(regex, '<span class="highlight">$1</span>');
-                }
-
-                function escapeRegExp(string) {
-                    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                }
-
-                function displayCases() {
-                    const container = document.getElementById('caseContainer');
-                    container.innerHTML = '';
-                    caseData.forEach(caseObj => {
-                        // Check if the case contains the search term
-                        const containsResident = caseObj.resident_report.toLowerCase().includes(currentSearchTerm.toLowerCase()) && currentSearchTerm !== '';
-                        const containsAttending = caseObj.attending_report.toLowerCase().includes(currentSearchTerm.toLowerCase()) && currentSearchTerm !== '';
-
-                        if (currentSearchTerm && !containsResident && !containsAttending) {
-                            // Skip this case as it doesn't contain the search term
-                            return;
-                        }
-
-                        // Highlight the search terms in the reports
-                        const residentReport = highlightText(caseObj.resident_report, currentSearchTerm);
-                        const attendingReport = highlightText(caseObj.attending_report, currentSearchTerm);
-
-                        // Determine if tabs should be highlighted
-                        const residentTabClass = containsResident ? 'active highlighted' : (caseObj.summary ? 'active' : ''); // Ensure 'active' if showAllResident is active
-                        const attendingTabClass = containsAttending ? 'active highlighted' : (caseObj.summary ? 'active' : ''); // Ensure 'active' if showAllAttending is active
-
-                        container.innerHTML += `
-                            <div id="case${caseObj.case_num}">
-                                <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
-                                <ul class="nav nav-tabs" id="myTab${caseObj.case_num}" role="tablist">
-                                    <li class="nav-item" role="presentation">
-                                        <button class="nav-link ${caseObj.summary ? 'active' : ''}" id="summary-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#summary${caseObj.case_num}" type="button" role="tab">Summary Report</button>
-                                    </li>
-                                    <li class="nav-item" role="presentation">
-                                        <button class="nav-link" id="diff-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#diff${caseObj.case_num}" type="button" role="tab">Combined Report</button>
-                                    </li>
-                                    <li class="nav-item" role="presentation">
-                                        <button class="nav-link ${containsResident ? 'highlighted' : ''}" id="resident-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#resident${caseObj.case_num}" type="button" role="tab">Resident Report</button>
-                                    </li>
-                                    <li class="nav-item" role="presentation">
-                                        <button class="nav-link ${containsAttending ? 'highlighted' : ''}" id="attending-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#attending${caseObj.case_num}" type="button" role="tab">Attending Report</button>
-                                    </li>
-                                </ul>
-                                <div class="tab-content" id="myTabContent${caseObj.case_num}">
-                                    <div class="tab-pane fade show active" id="summary${caseObj.case_num}" role="tabpanel">
-                                        <div class="summary-output">
-                                            <p><strong>Score:</strong> ${caseObj.summary && caseObj.summary.score || 'N/A'}</p>
-                                            ${caseObj.summary && caseObj.summary.major_findings?.length ? `<p><strong>Major Findings:</strong></p><ul>${caseObj.summary.major_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
-                                            ${caseObj.summary && caseObj.summary.minor_findings?.length ? `<p><strong>Minor Findings:</strong></p><ul>${caseObj.summary.minor_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
-                                            ${caseObj.summary && caseObj.summary.clarifications?.length ? `<p><strong>Clarifications:</strong></p><ul>${caseObj.summary.clarifications.map(clarification => `<li>${clarification}</li>`).join('')}</ul>` : ''}
-                                        </div>
-                                    </div>
-                                    <div class="tab-pane fade" id="diff${caseObj.case_num}" role="tabpanel">
-                                        <div class="diff-output">${caseObj.diff}</div>
-                                    </div>
-                                    <div class="tab-pane fade" id="resident${caseObj.case_num}" role="tabpanel">
-                                        <div class="diff-output"><pre>${residentReport}</pre></div>
-                                    </div>
-                                    <div class="tab-pane fade" id="attending${caseObj.case_num}" role="tabpanel">
-                                        <div class="diff-output"><pre>${attendingReport}</pre></div>
+                    container.innerHTML += `
+                        <div id="case${caseObj.case_num}">
+                            <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
+                            <ul class="nav nav-tabs" id="myTab${caseObj.case_num}" role="tablist">
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link active" id="summary-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#summary${caseObj.case_num}" type="button" role="tab">Summary Report</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="combined-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#combined${caseObj.case_num}" type="button" role="tab">Combined Report</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link${containsResident ? ' highlighted' : ''}" id="resident-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#resident${caseObj.case_num}" type="button" role="tab">Resident Report</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link${containsAttending ? ' highlighted' : ''}" id="attending-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#attending${caseObj.case_num}" type="button" role="tab">Attending Report</button>
+                                </li>
+                            </ul>
+                            <div class="tab-content" id="myTabContent${caseObj.case_num}">
+                                <div class="tab-pane fade show active" id="summary${caseObj.case_num}" role="tabpanel">
+                                    <div class="summary-output">
+                                        <p><strong>Score:</strong> ${caseObj.summary && caseObj.summary.score || 'N/A'}</p>
+                                        ${
+                                            caseObj.summary && caseObj.summary.major_findings?.length
+                                                ? `<p><strong>Major Findings:</strong></p><ul>${caseObj.summary.major_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>`
+                                                : ''
+                                        }
+                                        ${
+                                            caseObj.summary && caseObj.summary.minor_findings?.length
+                                                ? `<p><strong>Minor Findings:</strong></p><ul>${caseObj.summary.minor_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>`
+                                                : ''
+                                        }
+                                        ${
+                                            caseObj.summary && caseObj.summary.clarifications?.length
+                                                ? `<p><strong>Clarifications:</strong></p><ul>${caseObj.summary.clarifications.map(clarification => `<li>${clarification}</li>`).join('')}</ul>`
+                                                : ''
+                                        }
                                     </div>
                                 </div>
-                                <hr>
+                                <div class="tab-pane fade" id="combined${caseObj.case_num}" role="tabpanel">
+                                    <div class="diff-output">${caseObj.diff}</div>
+                                </div>
+                                <div class="tab-pane fade" id="resident${caseObj.case_num}" role="tabpanel">
+                                    <div class="diff-output"><pre>${highlightedResident}</pre></div>
+                                </div>
+                                <div class="tab-pane fade" id="attending${caseObj.case_num}" role="tabpanel">
+                                    <div class="diff-output"><pre>${highlightedAttending}</pre></div>
+                                </div>
                             </div>
-                        `;
-                    });
-                }
-
-                document.addEventListener("DOMContentLoaded", () => {
-                    displayCases();
-                    displayNavigation();
+                            <hr>
+                        </div>
+                    `;
                 });
+            }
 
-                // Display Navigation
-                function displayNavigation() {
-                    const nav = document.getElementById('caseNav');
-                    nav.innerHTML = '';
-                    caseData.forEach(caseObj => {
-                        nav.innerHTML += `
-                            <li>
-                                <a href="#case${caseObj.case_num}">Case ${caseObj.case_num}</a> - ${caseObj.percentage_change}% change - Score: ${(caseObj.summary && caseObj.summary.score) || 'N/A'}
-                            </li>
-                        `;
-                    });
-                }
+            document.addEventListener("DOMContentLoaded", () => {
+                displayCases();
+                displayNavigation();
+            });
 
-                // Handle Search Input
-                const searchBar = document.getElementById('searchBar');
-                searchBar.addEventListener('input', debounce(handleSearch, 300));
+            // Debounce function to improve performance for search
+            function debounce(func, wait) {
+                let timeout;
+                return function(...args) {
+                    clearTimeout(timeout);
+                    timeout = setTimeout(() => func.apply(this, args), wait);
+                };
+            }
 
-                function handleSearch(e) {
+            // Listen for search input and re-display with highlighted terms
+            const searchBar = document.getElementById('searchBar');
+            if(searchBar) {
+                searchBar.addEventListener('input', debounce(function(e) {
                     currentSearchTerm = e.target.value.trim();
                     displayCases();
-                }
+                }, 300));
+            }
 
-                // Debounce Function to Improve Performance
-                function debounce(func, wait) {
-                    let timeout;
-                    return function(...args) {
-                        clearTimeout(timeout);
-                        timeout = setTimeout(() => func.apply(this, args), wait);
-                    };
+            // Scroll-to-top function
+            function scrollToTop() {
+                const majorFindingsSection = document.getElementById('majorFindings');
+                if (majorFindingsSection) {
+                    majorFindingsSection.scrollIntoView({ behavior: 'smooth' });
                 }
-
-                // Scroll to Top Function
-                function scrollToTop() {
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                }
-            </script>
-        </body>
-    </html>
+            }
+        </script>
+    </body>
+</html>
     """
     return render_template_string(template, case_data=case_data, custom_prompt=custom_prompt)
 
