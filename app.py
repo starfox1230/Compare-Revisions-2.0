@@ -3,16 +3,16 @@ import difflib
 import re
 import os
 import json
-from openai import OpenAI
+import openai  # Ensure you have the OpenAI Python package installed
 
 app = Flask(__name__)
 
 # Initialize OpenAI API key
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # Default customized prompt
 DEFAULT_PROMPT = """Succinctly organize the changes made by the attending to the resident's radiology reports into: 
-1) missed major findings (findings discussed by the attending but not by the resident that also fit under these categories: retained sponge or other clinically significant foreign body, mass or tumor, malpositioned line or tube of immediate clinical concern, life-threatening hemorrhage or vascular disruption, necrotizing fasciitis, free air or active leakage from the GI tract, ectopic pregnancy, intestinal ischemia or portomesenteric gas, ovarian torsion, testicular torsion, placental abruption, absent perfusion in a postoperative transplant, renal collecting system obstruction with signs of infection, acute cholecystitis, intracranial hemorrhage, midline shift, brain herniation, cerebral infarction or abscess or meningoencephalitis, airway compromise, abscess or discitis,  hemorrhage, cord compression or unstable spine fracture or transection, acute cord hemorrhage or infarct, pneumothorax, large pericardial effusion, findings suggestive of active TB, impending pathologic fracture, acute fracture, absent perfusion in a postoperative kidney, brain death, high probability ventilation/perfusion (VQ) lung scan, arterial dissection or occlusion, acute thrombotic or embolic event including DVT and pulmonary thromboembolism, and aneurysm or vascular disruption), 
+1) missed major findings (findings discussed by the attending but not by the resident that also fit under these categories: retained sponge or other clinically significant foreign body, mass or tumor, malpositioned line or tube of immediate clinical concern, life-threatening hemorrhage or vascular disruption, necrotizing fasciitis, free air or active leakage from the GI tract, ectopic pregnancy, intestinal ischemia or portomesenteric gas, ovarian torsion, testicular torsion, placental abruption, absent perfusion in a postoperative transplant, renal collecting system obstruction with signs of infection, acute cholecystitis, intracranial hemorrhage, midline shift, brain herniation, cerebral infarction or abscess or meningoencephalitis, airway compromise, abscess or discitis, hemorrhage, cord compression or unstable spine fracture or transection, acute cord hemorrhage or infarct, pneumothorax, large pericardial effusion, findings suggestive of active TB, impending pathologic fracture, acute fracture, absent perfusion in a postoperative kidney, brain death, high probability ventilation/perfusion (VQ) lung scan, arterial dissection or occlusion, acute thrombotic or embolic event including DVT and pulmonary thromboembolism, and aneurysm or vascular disruption), 
 2) missed minor findings (this includes all other pathologies not in the above list that were discussed by the attending but not by the resident), and 
 3) clarified descriptions of findings (this includes findings removed by the attending, findings re-worded by the attending, etc). 
 Assume the attending's version was correct, and anything not included by the attending but was included by the resident should have been left out by the resident. Keep your answers brief and to the point. The reports are: 
@@ -128,8 +128,8 @@ def create_diff_by_section(resident_text, attending_text):
 # AI function to get a structured JSON summary of report differences
 def get_summary(case_text, custom_prompt, case_number):
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that outputs structured JSON summaries of radiology report differences."},
                 {"role": "user", "content": f"{custom_prompt}\nCase Number: {case_number}\n{case_text}"}
@@ -190,11 +190,11 @@ def index():
         case_data = extract_cases(text_block, custom_prompt)
 
     template = """
-<html>
-    <head>
-        <title>Radiology Report Diff & Summarizer</title>
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
-        <style>
+    <html>
+        <head>
+            <title>Radiology Report Comparison Tool</title>
+            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
+            <style>
                 body { background-color: #1e1e1e; color: #dcdcdc; font-family: Arial, sans-serif; }
                 textarea, input, button { background-color: #333333; color: #dcdcdc; border: 1px solid #555; }
                 textarea { background-color: #333333 !important; color: #dcdcdc !important; border: 1px solid #555 !important; }
@@ -204,167 +204,264 @@ def index():
                 .nav-tabs .nav-link { background-color: #333; border-color: #555; color: #dcdcdc; }
                 .nav-tabs .nav-link.active { background-color: #007bff; border-color: #007bff #007bff #333; color: white; }
 
+                /* Highlighted Tabs */
+                .nav-tabs .nav-link.highlighted {
+                    border: 2px solid #FFD700; /* Gold border to indicate match */
+                }
+                .nav-tabs .nav-link.active.highlighted {
+                    background-color: #0056b3; /* Darker blue for active highlighted tab */
+                    border: 2px solid #FFD700; /* Gold border */
+                }
+
                 /* Scroll-to-top button */
                 #scrollToTopBtn {
-                        position: fixed;
-                        right: 20px;
-                        bottom: 20px;
-                        background-color: #007bff;
-                        color: white;
-                        padding: 10px 15px;
-                        border-radius: 15px;
-                        border: none;
-                        cursor: pointer;
-                        z-index: 1000;
+                    position: fixed;
+                    right: 20px;
+                    bottom: 20px;
+                    background-color: #007bff;
+                    color: white;
+                    padding: 10px 15px;
+                    border-radius: 15px;
+                    border: none;
+                    cursor: pointer;
+                    z-index: 1000;
                 }
                 #scrollToTopBtn:hover {
-                        background-color: #0056b3;
+                    background-color: #0056b3;
                 }
 
                 /* Links styling for night mode */
                 a {
-                        color: #66ccff; /* A softer blue that is easier on the eyes in night mode */
-                        text-decoration: none; /* Removes underline */
+                    color: #66ccff; /* A softer blue that is easier on the eyes in night mode */
+                    text-decoration: none; /* Removes underline */
                 }
                 a:hover {
-                        color: #99e6ff; /* A lighter blue for hover state */
-                        text-decoration: none; /* Ensures no underline on hover */
+                    color: #99e6ff; /* A lighter blue for hover state */
+                    text-decoration: none; /* Ensures no underline on hover */
                 }
-        </style>
 
-    </head>
-    <body>
-        <div class="container">
-            <h2 class="mt-4">Compare Revisions & Summarize Reports</h2>
-            <form method="POST" id="reportForm">
-                <div class="form-group mb-3">
-                    <label for="report_text">Paste your reports block here:</label>
-                    <textarea id="report_text" name="report_text" class="form-control" rows="10">{{ request.form.get('report_text', '') }}</textarea>
-                </div>
-                <div class="form-group mb-3">
-                    <label for="custom_prompt">Customize your OpenAI API prompt:</label>
-                    <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="5">{{ custom_prompt }}</textarea>
-                </div>
-                <button type="submit" class="btn btn-primary">Compare & Summarize Reports</button>
-            </form>
-            {% if case_data %}
-                <h3 id="majorFindings">Major Findings Missed</h3>
-                <ul>
-                    {% for case in case_data %}
-                        {% if case.summary and case.summary.major_findings %}
-                            {% for finding in case.summary.major_findings %}
-                                <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
-                            {% endfor %}
-                        {% endif %}
-                    {% endfor %}
-                </ul>
-                <h3>Minor Findings Missed</h3>
-                <ul>
-                    {% for case in case_data %}
-                        {% if case.summary and case.summary.minor_findings %}
-                            {% for finding in case.summary.minor_findings %}
-                                <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
-                            {% endfor %}
-                        {% endif %}
-                    {% endfor %}
-                </ul>
-                <h3>Case Navigation</h3>
-                <div class="btn-group" role="group" aria-label="Sort Options">
-                    <button type="button" class="btn btn-secondary" onclick="sortCases('case_number')">Sort by Case Number</button>
-                    <button type="button" class="btn btn-secondary" onclick="sortCases('percentage_change')">Sort by Percentage Change</button>
-                    <button type="button" class="btn btn-secondary" onclick="sortCases('summary_score')">Sort by Summary Score</button>
-                </div>
-                <ul id="caseNav"></ul>
-                <div id="caseContainer"></div>
-            {% endif %}
-        </div>
-        <!-- Added scroll-to-top button -->
-        <button id="scrollToTopBtn" onclick="scrollToTop()">Top ⬆</button>
-        <script>
-            let caseData = {{ case_data | tojson }};
-            
-            function sortCases(option) {
-                if (option === "case_number") {
-                    caseData.sort((a, b) => parseInt(a.case_num) - parseInt(b.case_num));
-                } else if (option === "percentage_change") {
-                    caseData.sort((a, b) => b.percentage_change - a.percentage_change);
-                } else if (option === "summary_score") {
-                    caseData.sort((a, b) => (b.summary && b.summary.score || 0) - (a.summary && a.summary.score || 0));
+                /* Highlighted Search Terms */
+                .highlight {
+                    background-color: #FFD700;
+                    color: #000000;
+                    padding: 0;
                 }
-                displayCases();
-                displayNavigation();
-            }
-            function displayNavigation() {
-                const nav = document.getElementById('caseNav');
-                nav.innerHTML = '';
-                caseData.forEach(caseObj => {
-                    nav.innerHTML += `
-                        <li>
-                            <a href="#case${caseObj.case_num}">Case ${caseObj.case_num}</a> - ${caseObj.percentage_change}% change - Score: ${(caseObj.summary && caseObj.summary.score) || 'N/A'}
-                        </li>
-                    `;
-                });
-            }
-            function displayCases() {
-                const container = document.getElementById('caseContainer');
-                container.innerHTML = '';
-                caseData.forEach(caseObj => {
-                    container.innerHTML += `
-                        <div id="case${caseObj.case_num}">
-                            <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
-                            <ul class="nav nav-tabs" id="myTab${caseObj.case_num}" role="tablist">
-                                <li class="nav-item" role="presentation">
-                                    <button class="nav-link active" id="summary-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#summary${caseObj.case_num}" type="button" role="tab">Summary Report</button>
-                                </li>
-                                <li class="nav-item" role="presentation">
-                                    <button class="nav-link" id="combined-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#combined${caseObj.case_num}" type="button" role="tab">Combined Report</button>
-                                </li>
-                                <li class="nav-item" role="presentation">
-                                    <button class="nav-link" id="resident-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#resident${caseObj.case_num}" type="button" role="tab">Resident Report</button>
-                                </li>
-                                <li class="nav-item" role="presentation">
-                                    <button class="nav-link" id="attending-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#attending${caseObj.case_num}" type="button" role="tab">Attending Report</button>
-                                </li>
-                            </ul>
-                            <div class="tab-content" id="myTabContent${caseObj.case_num}">
-                                <div class="tab-pane fade show active" id="summary${caseObj.case_num}" role="tabpanel">
-                                    <div class="summary-output">
-                                        <p><strong>Score:</strong> ${caseObj.summary && caseObj.summary.score || 'N/A'}</p>
-                                        ${caseObj.summary && caseObj.summary.major_findings?.length ? `<p><strong>Major Findings:</strong></p><ul>${caseObj.summary.major_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
-                                        ${caseObj.summary && caseObj.summary.minor_findings?.length ? `<p><strong>Minor Findings:</strong></p><ul>${caseObj.summary.minor_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
-                                        ${caseObj.summary && caseObj.summary.clarifications?.length ? `<p><strong>Clarifications:</strong></p><ul>${caseObj.summary.clarifications.map(clarification => `<li>${clarification}</li>`).join('')}</ul>` : ''}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h2 class="mt-4">Compare Revisions & Summarize Reports</h2>
+                <form method="POST" id="reportForm">
+                    <div class="form-group mb-3">
+                        <label for="report_text">Paste your reports block here:</label>
+                        <textarea id="report_text" name="report_text" class="form-control" rows="10">{{ request.form.get('report_text', '') }}</textarea>
+                    </div>
+                    <div class="form-group mb-3">
+                        <label for="custom_prompt">Customize your OpenAI API prompt:</label>
+                        <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="5">{{ custom_prompt }}</textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Compare & Summarize Reports</button>
+                </form>
+                
+                {% if case_data %}
+                    <!-- Search Bar -->
+                    <div class="form-group mt-4">
+                        <label for="searchBar">Search Reports:</label>
+                        <input type="text" id="searchBar" class="form-control" placeholder="Enter search term...">
+                    </div>
+
+                    <!-- Major Findings -->
+                    <h3 id="majorFindings" class="mt-4">Major Findings Missed</h3>
+                    <ul>
+                        {% for case in case_data %}
+                            {% if case.summary and case.summary.major_findings %}
+                                {% for finding in case.summary.major_findings %}
+                                    <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
+                                {% endfor %}
+                            {% endif %}
+                        {% endfor %}
+                    </ul>
+
+                    <!-- Minor Findings -->
+                    <h3>Minor Findings Missed</h3>
+                    <ul>
+                        {% for case in case_data %}
+                            {% if case.summary and case.summary.minor_findings %}
+                                {% for finding in case.summary.minor_findings %}
+                                    <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
+                                {% endfor %}
+                            {% endif %}
+                        {% endfor %}
+                    </ul>
+
+                    <!-- Sort Options -->
+                    <h3>Case Navigation</h3>
+                    <div class="btn-group mb-3" role="group" aria-label="Sort Options">
+                        <button type="button" class="btn btn-secondary" onclick="sortCases('case_number')">Sort by Case Number</button>
+                        <button type="button" class="btn btn-secondary" onclick="sortCases('percentage_change')">Sort by Percentage Change</button>
+                        <button type="button" class="btn btn-secondary" onclick="sortCases('summary_score')">Sort by Summary Score</button>
+                    </div>
+                    <ul id="caseNav"></ul>
+
+                    <!-- Cases Container -->
+                    <div id="caseContainer"></div>
+                {% endif %}
+            </div>
+
+            <!-- Scroll-to-top button -->
+            <button id="scrollToTopBtn" onclick="scrollToTop()">Top ⬆</button>
+
+            <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+            <script>
+                let caseData = {{ case_data | tojson }};
+                let currentSearchTerm = '';
+
+                function sortCases(option) {
+                    if (option === "case_number") {
+                        caseData.sort((a, b) => parseInt(a.case_num) - parseInt(b.case_num));
+                    } else if (option === "percentage_change") {
+                        caseData.sort((a, b) => b.percentage_change - a.percentage_change);
+                    } else if (option === "summary_score") {
+                        caseData.sort((a, b) => (b.summary && b.summary.score || 0) - (a.summary && a.summary.score || 0));
+                    }
+                    displayCases();
+                    displayNavigation();
+                }
+
+                function displayNavigation() {
+                    const nav = document.getElementById('caseNav');
+                    nav.innerHTML = '';
+                    caseData.forEach(caseObj => {
+                        nav.innerHTML += `
+                            <li>
+                                <a href="#case${caseObj.case_num}">Case ${caseObj.case_num}</a> - ${caseObj.percentage_change}% change - Score: ${(caseObj.summary && caseObj.summary.score) || 'N/A'}
+                            </li>
+                        `;
+                    });
+                }
+
+                function escapeHTML(text) {
+                    const div = document.createElement('div');
+                    div.textContent = text;
+                    return div.innerHTML;
+                }
+
+                function highlightText(text, term) {
+                    if (!term) return escapeHTML(text);
+                    const regex = new RegExp(`(${escapeRegExp(term)})`, 'gi');
+                    return escapeHTML(text).replace(regex, '<span class="highlight">$1</span>');
+                }
+
+                function escapeRegExp(string) {
+                    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                }
+
+                function displayCases() {
+                    const container = document.getElementById('caseContainer');
+                    container.innerHTML = '';
+                    caseData.forEach(caseObj => {
+                        // Check if the case contains the search term
+                        const containsResident = caseObj.resident_report.toLowerCase().includes(currentSearchTerm.toLowerCase()) && currentSearchTerm !== '';
+                        const containsAttending = caseObj.attending_report.toLowerCase().includes(currentSearchTerm.toLowerCase()) && currentSearchTerm !== '';
+
+                        if (currentSearchTerm && !containsResident && !containsAttending) {
+                            // Skip this case as it doesn't contain the search term
+                            return;
+                        }
+
+                        // Highlight the search terms in the reports
+                        const residentReport = highlightText(caseObj.resident_report, currentSearchTerm);
+                        const attendingReport = highlightText(caseObj.attending_report, currentSearchTerm);
+
+                        // Determine if tabs should be highlighted
+                        const residentTabClass = containsResident ? 'active highlighted' : (caseObj.summary ? 'active' : ''); // Ensure 'active' if showAllResident is active
+                        const attendingTabClass = containsAttending ? 'active highlighted' : (caseObj.summary ? 'active' : ''); // Ensure 'active' if showAllAttending is active
+
+                        container.innerHTML += `
+                            <div id="case${caseObj.case_num}">
+                                <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
+                                <ul class="nav nav-tabs" id="myTab${caseObj.case_num}" role="tablist">
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link ${caseObj.summary ? 'active' : ''}" id="summary-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#summary${caseObj.case_num}" type="button" role="tab">Summary Report</button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="diff-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#diff${caseObj.case_num}" type="button" role="tab">Combined Report</button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link ${containsResident ? 'highlighted' : ''}" id="resident-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#resident${caseObj.case_num}" type="button" role="tab">Resident Report</button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link ${containsAttending ? 'highlighted' : ''}" id="attending-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#attending${caseObj.case_num}" type="button" role="tab">Attending Report</button>
+                                    </li>
+                                </ul>
+                                <div class="tab-content" id="myTabContent${caseObj.case_num}">
+                                    <div class="tab-pane fade show active" id="summary${caseObj.case_num}" role="tabpanel">
+                                        <div class="summary-output">
+                                            <p><strong>Score:</strong> ${caseObj.summary && caseObj.summary.score || 'N/A'}</p>
+                                            ${caseObj.summary && caseObj.summary.major_findings?.length ? `<p><strong>Major Findings:</strong></p><ul>${caseObj.summary.major_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
+                                            ${caseObj.summary && caseObj.summary.minor_findings?.length ? `<p><strong>Minor Findings:</strong></p><ul>${caseObj.summary.minor_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
+                                            ${caseObj.summary && caseObj.summary.clarifications?.length ? `<p><strong>Clarifications:</strong></p><ul>${caseObj.summary.clarifications.map(clarification => `<li>${clarification}</li>`).join('')}</ul>` : ''}
+                                        </div>
+                                    </div>
+                                    <div class="tab-pane fade" id="diff${caseObj.case_num}" role="tabpanel">
+                                        <div class="diff-output">${caseObj.diff}</div>
+                                    </div>
+                                    <div class="tab-pane fade" id="resident${caseObj.case_num}" role="tabpanel">
+                                        <div class="diff-output"><pre>${residentReport}</pre></div>
+                                    </div>
+                                    <div class="tab-pane fade" id="attending${caseObj.case_num}" role="tabpanel">
+                                        <div class="diff-output"><pre>${attendingReport}</pre></div>
                                     </div>
                                 </div>
-                                <div class="tab-pane fade" id="combined${caseObj.case_num}" role="tabpanel">
-                                    <div class="diff-output">${caseObj.diff}</div>
-                                </div>
-                                <div class="tab-pane fade" id="resident${caseObj.case_num}" role="tabpanel">
-                                    <div class="diff-output"><pre>${caseObj.resident_report}</pre></div>
-                                </div>
-                                <div class="tab-pane fade" id="attending${caseObj.case_num}" role="tabpanel">
-                                    <div class="diff-output"><pre>${caseObj.attending_report}</pre></div>
-                                </div>
+                                <hr>
                             </div>
-                            <hr>
-                        </div>
-                    `;
-                });
-            }
-            document.addEventListener("DOMContentLoaded", () => {
-                displayCases();
-                displayNavigation();
-            });
-            // Added scrollToTop function
-            function scrollToTop() {
-                const majorFindingsSection = document.getElementById('majorFindings');
-                if (majorFindingsSection) {
-                    majorFindingsSection.scrollIntoView({ behavior: 'smooth' });
+                        `;
+                    });
                 }
-            }
-        </script>
-        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    </body>
-</html>
+
+                document.addEventListener("DOMContentLoaded", () => {
+                    displayCases();
+                    displayNavigation();
+                });
+
+                // Display Navigation
+                function displayNavigation() {
+                    const nav = document.getElementById('caseNav');
+                    nav.innerHTML = '';
+                    caseData.forEach(caseObj => {
+                        nav.innerHTML += `
+                            <li>
+                                <a href="#case${caseObj.case_num}">Case ${caseObj.case_num}</a> - ${caseObj.percentage_change}% change - Score: ${(caseObj.summary && caseObj.summary.score) || 'N/A'}
+                            </li>
+                        `;
+                    });
+                }
+
+                // Handle Search Input
+                const searchBar = document.getElementById('searchBar');
+                searchBar.addEventListener('input', debounce(handleSearch, 300));
+
+                function handleSearch(e) {
+                    currentSearchTerm = e.target.value.trim();
+                    displayCases();
+                }
+
+                // Debounce Function to Improve Performance
+                function debounce(func, wait) {
+                    let timeout;
+                    return function(...args) {
+                        clearTimeout(timeout);
+                        timeout = setTimeout(() => func.apply(this, args), wait);
+                    };
+                }
+
+                // Scroll to Top Function
+                function scrollToTop() {
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+            </script>
+        </body>
+    </html>
     """
     return render_template_string(template, case_data=case_data, custom_prompt=custom_prompt)
 
