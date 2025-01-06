@@ -194,6 +194,8 @@ def index():
     <head>
         <title>Radiology Report Diff & Summarizer</title>
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
+        <!-- Added dotlottie-player script -->
+        <script src="https://unpkg.com/@dotlottie/player-component@2.7.12/dist/dotlottie-player.mjs" type="module"></script>
         <style>
                 body { background-color: #1e1e1e; color: #dcdcdc; font-family: Arial, sans-serif; }
                 textarea, input, button { background-color: #333333; color: #dcdcdc; border: 1px solid #555; }
@@ -230,6 +232,12 @@ def index():
                         color: #99e6ff; /* A lighter blue for hover state */
                         text-decoration: none; /* Ensures no underline on hover */
                 }
+
+                /* Loading animation styling */
+                #loadingAnimation {
+                    display: none; /* Hidden by default */
+                    margin-top: 20px;
+                }
         </style>
 
     </head>
@@ -246,6 +254,8 @@ def index():
                     <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="5">{{ custom_prompt }}</textarea>
                 </div>
                 <button type="submit" class="btn btn-primary">Compare & Summarize Reports</button>
+                <!-- Added dotlottie-player for loading animation -->
+                <dotlottie-player id="loadingAnimation" src="https://lottie.host/817661a8-2608-4435-89a5-daa620a64c36/WtsFI5zdEK.lottie" background="transparent" speed="1" style="width: 300px; height: 300px;" loop autoplay></dotlottie-player>
             </form>
             {% if case_data %}
                 <h3 id="majorFindings">Major Findings Missed</h3>
@@ -361,6 +371,11 @@ def index():
                     majorFindingsSection.scrollIntoView({ behavior: 'smooth' });
                 }
             }
+
+            // Show loading animation on form submission
+            document.getElementById('reportForm').addEventListener('submit', function() {
+                document.getElementById('loadingAnimation').style.display = 'block';
+            });
         </script>
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     </body>
