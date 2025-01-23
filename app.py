@@ -5,8 +5,17 @@ import os
 import json
 from openai import OpenAI
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
 
 app = Flask(__name__)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize OpenAI API key
+# Note: Removed client initialization here to ensure thread safety by initializing within get_summary
+# client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Default customized prompt
 DEFAULT_PROMPT = """Succinctly organize the changes made by the attending to the resident's radiology reports into: 
@@ -140,6 +149,7 @@ def get_summary(case_text, custom_prompt, case_number):
         response_content = response.choices[0].message.content
         return json.loads(response_content)
     except Exception as e:
+        logger.error(f"Error processing case {case_number}: {e}")
         return {"case_number": case_number, "error": "Error processing AI"}
 
 # Process cases for summaries with concurrency
@@ -158,6 +168,7 @@ def process_cases(cases_data, custom_prompt, max_workers=100):
                 parsed_json = future.result() or {}
                 parsed_json['score'] = len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', []))
             except Exception as e:
+                logger.error(f"Error processing case {case_num}: {e}")
                 parsed_json = {"case_number": case_num, "error": "Error processing AI"}
             structured_output.append(parsed_json)
     return structured_output
@@ -177,6 +188,10 @@ def extract_cases(text, custom_prompt):
             case_text = f"Resident Report: {resident_report}\nAttending Report: {attending_report}"
             cases_data.append((case_text, case_num))
 
+    if not cases_data:
+        logger.warning("No valid cases found in the submitted text.")
+        return parsed_cases
+
     # Process all summaries concurrently
     ai_summaries = process_cases(cases_data, custom_prompt, max_workers=100)
 
@@ -184,6 +199,7 @@ def extract_cases(text, custom_prompt):
     for ai_summary in ai_summaries:
         case_num = ai_summary.get('case_number')
         if not case_num:
+            logger.warning("Summary missing 'case_number'. Skipping.")
             continue  # Skip if case_number is missing
         # Find the corresponding case content
         case_content = next((ct for ct, num in cases_data if num == case_num), "")
@@ -207,7 +223,10 @@ def index():
 
     if request.method == 'POST':
         text_block = request.form['report_text']
-        case_data = extract_cases(text_block, custom_prompt)
+        if not text_block.strip():
+            logger.warning("No report text provided.")
+        else:
+            case_data = extract_cases(text_block, custom_prompt)
 
     template = """
 <html>
