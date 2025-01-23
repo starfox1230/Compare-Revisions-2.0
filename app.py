@@ -27,8 +27,7 @@ Respond in this JSON format, with no other additional text or pleasantries:
   "minor_findings": [<minor_findings>],
   "clarifications": [<clarifications>],
   "score": <score>
-}
-"""
+}"""
 
 # Normalize text: trim spaces but keep returns (newlines) intact
 def normalize_text(text):
@@ -183,7 +182,9 @@ def extract_cases(text, custom_prompt):
 
     # Build the parsed_cases list with summaries
     for ai_summary in ai_summaries:
-        case_num = ai_summary.get('case_number') or ai_summary.get('case_num')
+        case_num = ai_summary.get('case_number')
+        if not case_num:
+            continue  # Skip if case_number is missing
         # Find the corresponding case content
         case_content = next((ct for ct, num in cases_data if num == case_num), "")
         if case_content:
@@ -325,6 +326,7 @@ def index():
             }
             function displayNavigation() {
                 const nav = document.getElementById('caseNav');
+                if (!nav) return; // Prevent errors if element not found
                 nav.innerHTML = '';
                 caseData.forEach(caseObj => {
                     nav.innerHTML += `
@@ -336,6 +338,7 @@ def index():
             }
             function displayCases() {
                 const container = document.getElementById('caseContainer');
+                if (!container) return; // Prevent errors if element not found
                 container.innerHTML = '';
                 caseData.forEach(caseObj => {
                     container.innerHTML += `
@@ -359,9 +362,9 @@ def index():
                                 <div class="tab-pane fade show active" id="summary${caseObj.case_num}" role="tabpanel">
                                     <div class="summary-output">
                                         <p><strong>Score:</strong> ${caseObj.summary && caseObj.summary.score || 'N/A'}</p>
-                                        ${caseObj.summary && caseObj.summary.major_findings?.length ? `<p><strong>Major Findings:</strong></p><ul>${caseObj.summary.major_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
-                                        ${caseObj.summary && caseObj.summary.minor_findings?.length ? `<p><strong>Minor Findings:</strong></p><ul>${caseObj.summary.minor_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
-                                        ${caseObj.summary && caseObj.summary.clarifications?.length ? `<p><strong>Clarifications:</strong></p><ul>${caseObj.summary.clarifications.map(clarification => `<li>${clarification}</li>`).join('')}</ul>` : ''}
+                                        ${caseObj.summary && caseObj.summary.major_findings && caseObj.summary.major_findings.length > 0 ? `<p><strong>Major Findings:</strong></p><ul>${caseObj.summary.major_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
+                                        ${caseObj.summary && caseObj.summary.minor_findings && caseObj.summary.minor_findings.length > 0 ? `<p><strong>Minor Findings:</strong></p><ul>${caseObj.summary.minor_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
+                                        ${caseObj.summary && caseObj.summary.clarifications && caseObj.summary.clarifications.length > 0 ? `<p><strong>Clarifications:</strong></p><ul>${caseObj.summary.clarifications.map(clarification => `<li>${clarification}</li>`).join('')}</ul>` : ''}
                                     </div>
                                 </div>
                                 <div class="tab-pane fade" id="combined${caseObj.case_num}" role="tabpanel">
