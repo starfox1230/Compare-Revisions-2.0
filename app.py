@@ -4,11 +4,9 @@ import re
 import os
 import json
 from openai import OpenAI
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = Flask(__name__)
-
-# Initialize OpenAI API key
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Default customized prompt
 DEFAULT_PROMPT = """Succinctly organize the changes made by the attending to the resident's radiology reports into: 
@@ -29,7 +27,8 @@ Respond in this JSON format, with no other additional text or pleasantries:
   "minor_findings": [<minor_findings>],
   "clarifications": [<clarifications>],
   "score": <score>
-}"""
+}
+"""
 
 # Normalize text: trim spaces but keep returns (newlines) intact
 def normalize_text(text):
@@ -128,6 +127,8 @@ def create_diff_by_section(resident_text, attending_text):
 # AI function to get a structured JSON summary of report differences
 def get_summary(case_text, custom_prompt, case_number):
     try:
+        # Initialize OpenAI client inside the function to ensure thread safety
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -142,19 +143,23 @@ def get_summary(case_text, custom_prompt, case_number):
     except Exception as e:
         return {"case_number": case_number, "error": "Error processing AI"}
 
-# Process cases for summaries
-def process_cases(bulk_text, custom_prompt):
-    case_numbers = re.findall(r"Case (\d+)", bulk_text)
-    cases = bulk_text.split("Case")
+# Process cases for summaries with concurrency
+def process_cases(cases_data, custom_prompt, max_workers=100):
     structured_output = []
-    for index, case in enumerate(cases[1:], start=1):
-        if "Attending Report" in case and "Resident Report" in case:
-            case_number = case_numbers[index - 1] if index - 1 < len(case_numbers) else index
-            attending_report = case.split("Attending Report:")[1].split("Resident Report:")[0].strip()
-            resident_report = case.split("Resident Report:")[1].strip()
-            case_text = f"Resident Report: {resident_report}\nAttending Report: {attending_report}"
-            parsed_json = get_summary(case_text, custom_prompt, case_number=case_number) or {}
-            parsed_json['score'] = len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', []))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all summary tasks to the executor
+        future_to_case = {
+            executor.submit(get_summary, case_text, custom_prompt, case_num): case_num
+            for case_text, case_num in cases_data
+        }
+
+        for future in as_completed(future_to_case):
+            case_num = future_to_case[future]
+            try:
+                parsed_json = future.result() or {}
+                parsed_json['score'] = len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', []))
+            except Exception as e:
+                parsed_json = {"case_number": case_num, "error": "Error processing AI"}
             structured_output.append(parsed_json)
     return structured_output
 
@@ -162,6 +167,7 @@ def process_cases(bulk_text, custom_prompt):
 def extract_cases(text, custom_prompt):
     cases = re.split(r'\bCase\s+(\d+)', text, flags=re.IGNORECASE)
     parsed_cases = []
+    cases_data = []
     for i in range(1, len(cases), 2):
         case_num = cases[i]
         case_content = cases[i + 1].strip()
@@ -169,14 +175,27 @@ def extract_cases(text, custom_prompt):
         if len(reports) >= 3:
             attending_report = reports[2].strip()
             resident_report = reports[4].strip() if len(reports) > 4 else ""
-            ai_summary = process_cases(f"Case {case_num}\n{case_content}", custom_prompt)
+            case_text = f"Resident Report: {resident_report}\nAttending Report: {attending_report}"
+            cases_data.append((case_text, case_num))
+
+    # Process all summaries concurrently
+    ai_summaries = process_cases(cases_data, custom_prompt, max_workers=100)
+
+    # Build the parsed_cases list with summaries
+    for ai_summary in ai_summaries:
+        case_num = ai_summary.get('case_number') or ai_summary.get('case_num')
+        # Find the corresponding case content
+        case_content = next((ct for ct, num in cases_data if num == case_num), "")
+        if case_content:
+            resident_report = case_content.split("\nAttending Report:")[0].replace("Resident Report: ", "").strip()
+            attending_report = case_content.split("\nAttending Report:")[1].strip()
             parsed_cases.append({
                 'case_num': case_num,
                 'resident_report': resident_report,
                 'attending_report': attending_report,
                 'percentage_change': calculate_change_percentage(resident_report, remove_attending_review_line(attending_report)),
                 'diff': create_diff_by_section(resident_report, attending_report),
-                'summary': ai_summary[0] if ai_summary else None
+                'summary': ai_summary if 'error' not in ai_summary else None  # Exclude summaries with errors
             })
     return parsed_cases
 
