@@ -13,10 +13,6 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize OpenAI API key
-# Note: Removed client initialization here to ensure thread safety by initializing within get_summary
-# client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
 # Default customized prompt
 DEFAULT_PROMPT = """Succinctly organize the changes made by the attending to the resident's radiology reports into: 
 1) missed major findings (findings discussed by the attending but not by the resident that also fit under these categories: retained sponge or other clinically significant foreign body, mass or tumor, malpositioned line or tube of immediate clinical concern, life-threatening hemorrhage or vascular disruption, necrotizing fasciitis, free air or active leakage from the GI tract, ectopic pregnancy, intestinal ischemia or portomesenteric gas, ovarian torsion, testicular torsion, placental abruption, absent perfusion in a postoperative transplant, renal collecting system obstruction with signs of infection, acute cholecystitis, intracranial hemorrhage, midline shift, brain herniation, cerebral infarction or abscess or meningoencephalitis, airway compromise, abscess or discitis,  hemorrhage, cord compression or unstable spine fracture or transection, acute cord hemorrhage or infarct, pneumothorax, large pericardial effusion, findings suggestive of active TB, impending pathologic fracture, acute fracture, absent perfusion in a postoperative kidney, brain death, high probability ventilation/perfusion (VQ) lung scan, arterial dissection or occlusion, acute thrombotic or embolic event including DVT and pulmonary thromboembolism, and aneurysm or vascular disruption), 
@@ -24,19 +20,20 @@ DEFAULT_PROMPT = """Succinctly organize the changes made by the attending to the
 3) clarified descriptions of findings (this includes findings removed by the attending, findings re-worded by the attending, etc). 
 Assume the attending's version was correct, and anything not included by the attending but was included by the resident should have been left out by the resident. Keep your answers brief and to the point. The reports are: 
 Please output your response as structured JSON, with the following keys:
-- "case_number": The case number sent in the request.
+- "case_num": The case number sent in the request.
 - "major_findings": A list of any major findings missed by the resident (as described above).
 - "minor_findings": A list of minor findings discussed by the attending but not by the resident (as described above).
 - "clarifications": A list of any clarifications the attending made (as described above).
 - "score": The calculated score, where each major finding is worth 3 points and each minor finding is worth 1 point.
 Respond in this JSON format, with no other additional text or pleasantries:
 {
-  "case_number": <case_number>,
+  "case_num": <case_num>,
   "major_findings": [<major_findings>],
   "minor_findings": [<minor_findings>],
   "clarifications": [<clarifications>],
   "score": <score>
-}"""
+}
+"""
 
 # Normalize text: trim spaces but keep returns (newlines) intact
 def normalize_text(text):
@@ -133,7 +130,7 @@ def create_diff_by_section(resident_text, attending_text):
     return diff_html
 
 # AI function to get a structured JSON summary of report differences
-def get_summary(case_text, custom_prompt, case_number):
+def get_summary(case_text, custom_prompt, case_num):
     try:
         # Initialize OpenAI client inside the function to ensure thread safety
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -141,7 +138,7 @@ def get_summary(case_text, custom_prompt, case_number):
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that outputs structured JSON summaries of radiology report differences."},
-                {"role": "user", "content": f"{custom_prompt}\nCase Number: {case_number}\n{case_text}"}
+                {"role": "user", "content": f"{custom_prompt}\nCase Number: {case_num}\n{case_text}"}
             ],
             max_tokens=2000,
             temperature=0.5
@@ -149,8 +146,8 @@ def get_summary(case_text, custom_prompt, case_number):
         response_content = response.choices[0].message.content
         return json.loads(response_content)
     except Exception as e:
-        logger.error(f"Error processing case {case_number}: {e}")
-        return {"case_number": case_number, "error": "Error processing AI"}
+        logger.error(f"Error processing case {case_num}: {e}")
+        return {"case_num": case_num, "error": "Error processing AI"}
 
 # Process cases for summaries with concurrency
 def process_cases(cases_data, custom_prompt, max_workers=100):
@@ -169,7 +166,7 @@ def process_cases(cases_data, custom_prompt, max_workers=100):
                 parsed_json['score'] = len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', []))
             except Exception as e:
                 logger.error(f"Error processing case {case_num}: {e}")
-                parsed_json = {"case_number": case_num, "error": "Error processing AI"}
+                parsed_json = {"case_num": case_num, "error": "Error processing AI"}
             structured_output.append(parsed_json)
     return structured_output
 
@@ -197,10 +194,10 @@ def extract_cases(text, custom_prompt):
 
     # Build the parsed_cases list with summaries
     for ai_summary in ai_summaries:
-        case_num = ai_summary.get('case_number')
+        case_num = ai_summary.get('case_num')
         if not case_num:
-            logger.warning("Summary missing 'case_number'. Skipping.")
-            continue  # Skip if case_number is missing
+            logger.warning("Summary missing 'case_num'. Skipping.")
+            continue  # Skip if case_num is missing
         # Find the corresponding case content
         case_content = next((ct for ct, num in cases_data if num == case_num), "")
         if case_content:
@@ -331,7 +328,8 @@ def index():
         <button id="scrollToTopBtn" onclick="scrollToTop()">Top ⬆</button>
         <script>
             let caseData = {{ case_data | tojson }};
-            
+            console.log("Received caseData:", caseData); // Debugging
+
             function sortCases(option) {
                 if (option === "case_number") {
                     caseData.sort((a, b) => parseInt(a.case_num) - parseInt(b.case_num));
@@ -345,7 +343,10 @@ def index():
             }
             function displayNavigation() {
                 const nav = document.getElementById('caseNav');
-                if (!nav) return; // Prevent errors if element not found
+                if (!nav) {
+                    console.error("Element with id 'caseNav' not found.");
+                    return; // Prevent errors if element not found
+                }
                 nav.innerHTML = '';
                 caseData.forEach(caseObj => {
                     nav.innerHTML += `
@@ -357,7 +358,10 @@ def index():
             }
             function displayCases() {
                 const container = document.getElementById('caseContainer');
-                if (!container) return; // Prevent errors if element not found
+                if (!container) {
+                    console.error("Element with id 'caseContainer' not found.");
+                    return; // Prevent errors if element not found
+                }
                 container.innerHTML = '';
                 caseData.forEach(caseObj => {
                     container.innerHTML += `
