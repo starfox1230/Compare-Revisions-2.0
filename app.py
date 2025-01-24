@@ -3,15 +3,24 @@ import difflib
 import re
 import os
 import json
-from openai import OpenAI
+from openai import OpenAI  # Ensure this is the correct import based on your working version
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 
 app = Flask(__name__)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging with timestamp and log level
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
+
+# Initialize OpenAI API key
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Default customized prompt
 DEFAULT_PROMPT = """Succinctly organize the changes made by the attending to the resident's radiology reports into: 
@@ -20,20 +29,19 @@ DEFAULT_PROMPT = """Succinctly organize the changes made by the attending to the
 3) clarified descriptions of findings (this includes findings removed by the attending, findings re-worded by the attending, etc). 
 Assume the attending's version was correct, and anything not included by the attending but was included by the resident should have been left out by the resident. Keep your answers brief and to the point. The reports are: 
 Please output your response as structured JSON, with the following keys:
-- "case_num": The case number sent in the request.
+- "case_number": The case number sent in the request.
 - "major_findings": A list of any major findings missed by the resident (as described above).
 - "minor_findings": A list of minor findings discussed by the attending but not by the resident (as described above).
 - "clarifications": A list of any clarifications the attending made (as described above).
 - "score": The calculated score, where each major finding is worth 3 points and each minor finding is worth 1 point.
 Respond in this JSON format, with no other additional text or pleasantries:
 {
-  "case_num": <case_num>,
+  "case_number": <case_number>,
   "major_findings": [<major_findings>],
   "minor_findings": [<minor_findings>],
   "clarifications": [<clarifications>],
   "score": <score>
-}
-"""
+}"""
 
 # Normalize text: trim spaces but keep returns (newlines) intact
 def normalize_text(text):
@@ -130,27 +138,30 @@ def create_diff_by_section(resident_text, attending_text):
     return diff_html
 
 # AI function to get a structured JSON summary of report differences
-def get_summary(case_text, custom_prompt, case_num):
+def get_summary(case_text, custom_prompt, case_number):
     try:
-        # Initialize OpenAI client inside the function to ensure thread safety
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        logger.info(f"Processing case {case_number}")
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that outputs structured JSON summaries of radiology report differences."},
-                {"role": "user", "content": f"{custom_prompt}\nCase Number: {case_num}\n{case_text}"}
+                {"role": "user", "content": f"{custom_prompt}\nCase Number: {case_number}\n{case_text}"}
             ],
             max_tokens=2000,
             temperature=0.5
         )
         response_content = response.choices[0].message.content
+        logger.info(f"Received response for case {case_number}: {response_content}")
         return json.loads(response_content)
+    except json.JSONDecodeError as jde:
+        logger.error(f"JSON decode error for case {case_number}: {jde}")
+        return {"case_number": case_number, "error": "Invalid JSON response from AI."}
     except Exception as e:
-        logger.error(f"Error processing case {case_num}: {e}")
-        return {"case_num": case_num, "error": "Error processing AI"}
+        logger.error(f"Error processing case {case_number}: {e}")
+        return {"case_number": case_number, "error": "Error processing AI"}
 
 # Process cases for summaries with concurrency
-def process_cases(cases_data, custom_prompt, max_workers=100):
+def process_cases(cases_data, custom_prompt, max_workers=20):
     structured_output = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit all summary tasks to the executor
@@ -164,9 +175,10 @@ def process_cases(cases_data, custom_prompt, max_workers=100):
             try:
                 parsed_json = future.result() or {}
                 parsed_json['score'] = len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', []))
+                logger.info(f"Processed summary for case {case_num}: Score {parsed_json['score']}")
             except Exception as e:
                 logger.error(f"Error processing case {case_num}: {e}")
-                parsed_json = {"case_num": case_num, "error": "Error processing AI"}
+                parsed_json = {"case_number": case_num, "error": "Error processing AI"}
             structured_output.append(parsed_json)
     return structured_output
 
@@ -182,21 +194,24 @@ def extract_cases(text, custom_prompt):
         if len(reports) >= 3:
             attending_report = reports[2].strip()
             resident_report = reports[4].strip() if len(reports) > 4 else ""
+            logger.info(f"Extracting case {case_num}")
             case_text = f"Resident Report: {resident_report}\nAttending Report: {attending_report}"
             cases_data.append((case_text, case_num))
+        else:
+            logger.warning(f"Case {case_num} does not contain both Attending and Resident Reports.")
 
     if not cases_data:
         logger.warning("No valid cases found in the submitted text.")
         return parsed_cases
 
     # Process all summaries concurrently
-    ai_summaries = process_cases(cases_data, custom_prompt, max_workers=100)
+    ai_summaries = process_cases(cases_data, custom_prompt, max_workers=20)
 
     # Build the parsed_cases list with summaries
     for ai_summary in ai_summaries:
-        case_num = ai_summary.get('case_num')
+        case_num = ai_summary.get('case_number')
         if not case_num:
-            logger.warning("Summary missing 'case_num'. Skipping.")
+            logger.warning("Summary missing 'case_number'. Skipping.")
             continue  # Skip if case_num is missing
         # Find the corresponding case content
         case_content = next((ct for ct, num in cases_data if num == case_num), "")
@@ -223,7 +238,9 @@ def index():
         if not text_block.strip():
             logger.warning("No report text provided.")
         else:
+            logger.info("Starting case extraction and processing.")
             case_data = extract_cases(text_block, custom_prompt)
+            logger.info("Completed case extraction and processing.")
 
     template = """
 <html>
@@ -315,14 +332,15 @@ def index():
                     {% endfor %}
                 </ul>
                 <h3>Case Navigation</h3>
-                <div class="btn-group" role="group" aria-label="Sort Options">
-                    <button type="button" class="btn btn-secondary" onclick="sortCases('case_number')">Sort by Case Number</button>
-                    <button type="button" class="btn btn-secondary" onclick="sortCases('percentage_change')">Sort by Percentage Change</button>
-                    <button type="button" class="btn btn-secondary" onclick="sortCases('summary_score')">Sort by Summary Score</button>
-                </div>
-                <ul id="caseNav"></ul>
-                <div id="caseContainer"></div>
             {% endif %}
+            <!-- Always include these elements to prevent JS errors -->
+            <div class="btn-group" role="group" aria-label="Sort Options">
+                <button type="button" class="btn btn-secondary" onclick="sortCases('case_number')">Sort by Case Number</button>
+                <button type="button" class="btn btn-secondary" onclick="sortCases('percentage_change')">Sort by Percentage Change</button>
+                <button type="button" class="btn btn-secondary" onclick="sortCases('summary_score')">Sort by Summary Score</button>
+            </div>
+            <ul id="caseNav"></ul>
+            <div id="caseContainer"></div>
         </div>
         <!-- Added scroll-to-top button -->
         <button id="scrollToTopBtn" onclick="scrollToTop()">Top ⬆</button>
@@ -331,6 +349,7 @@ def index():
             console.log("Received caseData:", caseData); // Debugging
 
             function sortCases(option) {
+                console.log("Sorting cases by:", option); // Debugging
                 if (option === "case_number") {
                     caseData.sort((a, b) => parseInt(a.case_num) - parseInt(b.case_num));
                 } else if (option === "percentage_change") {
@@ -341,6 +360,7 @@ def index():
                 displayCases();
                 displayNavigation();
             }
+
             function displayNavigation() {
                 const nav = document.getElementById('caseNav');
                 if (!nav) {
@@ -348,6 +368,10 @@ def index():
                     return; // Prevent errors if element not found
                 }
                 nav.innerHTML = '';
+                if (caseData.length === 0) {
+                    nav.innerHTML = '<li>No cases to display.</li>';
+                    return;
+                }
                 caseData.forEach(caseObj => {
                     nav.innerHTML += `
                         <li>
@@ -356,6 +380,7 @@ def index():
                     `;
                 });
             }
+
             function displayCases() {
                 const container = document.getElementById('caseContainer');
                 if (!container) {
@@ -363,7 +388,21 @@ def index():
                     return; // Prevent errors if element not found
                 }
                 container.innerHTML = '';
+                if (caseData.length === 0) {
+                    container.innerHTML = '<p>No cases to display.</p>';
+                    return;
+                }
                 caseData.forEach(caseObj => {
+                    if (!caseObj.summary) {
+                        container.innerHTML += `
+                            <div id="case${caseObj.case_num}">
+                                <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
+                                <p style="color: red;"><strong>Error:</strong> Unable to generate summary for this case.</p>
+                                <hr>
+                            </div>
+                        `;
+                        return;
+                    }
                     container.innerHTML += `
                         <div id="case${caseObj.case_num}">
                             <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
@@ -384,10 +423,10 @@ def index():
                             <div class="tab-content" id="myTabContent${caseObj.case_num}">
                                 <div class="tab-pane fade show active" id="summary${caseObj.case_num}" role="tabpanel">
                                     <div class="summary-output">
-                                        <p><strong>Score:</strong> ${caseObj.summary && caseObj.summary.score || 'N/A'}</p>
-                                        ${caseObj.summary && caseObj.summary.major_findings && caseObj.summary.major_findings.length > 0 ? `<p><strong>Major Findings:</strong></p><ul>${caseObj.summary.major_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
-                                        ${caseObj.summary && caseObj.summary.minor_findings && caseObj.summary.minor_findings.length > 0 ? `<p><strong>Minor Findings:</strong></p><ul>${caseObj.summary.minor_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
-                                        ${caseObj.summary && caseObj.summary.clarifications && caseObj.summary.clarifications.length > 0 ? `<p><strong>Clarifications:</strong></p><ul>${caseObj.summary.clarifications.map(clarification => `<li>${clarification}</li>`).join('')}</ul>` : ''}
+                                        <p><strong>Score:</strong> ${caseObj.summary.score || 'N/A'}</p>
+                                        ${caseObj.summary.major_findings && caseObj.summary.major_findings.length > 0 ? `<p><strong>Major Findings:</strong></p><ul>${caseObj.summary.major_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
+                                        ${caseObj.summary.minor_findings && caseObj.summary.minor_findings.length > 0 ? `<p><strong>Minor Findings:</strong></p><ul>${caseObj.summary.minor_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
+                                        ${caseObj.summary.clarifications && caseObj.summary.clarifications.length > 0 ? `<p><strong>Clarifications:</strong></p><ul>${caseObj.summary.clarifications.map(clarification => `<li>${clarification}</li>`).join('')}</ul>` : ''}
                                     </div>
                                 </div>
                                 <div class="tab-pane fade" id="combined${caseObj.case_num}" role="tabpanel">
@@ -405,11 +444,17 @@ def index():
                     `;
                 });
             }
+
             document.addEventListener("DOMContentLoaded", () => {
-                displayCases();
-                displayNavigation();
+                if (caseData && caseData.length > 0) {
+                    displayCases();
+                    displayNavigation();
+                } else {
+                    console.log("No case data available to display.");
+                }
             });
-            // Added scrollToTop function
+
+            // Scroll-to-top function
             function scrollToTop() {
                 const majorFindingsSection = document.getElementById('majorFindings');
                 if (majorFindingsSection) {
