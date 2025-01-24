@@ -155,7 +155,7 @@ def get_summary(case_text, custom_prompt, case_number):
         return {"case_number": case_number, "error": "Error processing AI"}
 
 # Process cases for summaries with concurrency
-def process_cases(cases_data, custom_prompt, max_workers=20):
+def process_cases(cases_data, custom_prompt, max_workers=100):
     structured_output = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit all summary tasks to the executor
