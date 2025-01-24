@@ -3,9 +3,9 @@ import difflib
 import re
 import os
 import json
+import logging
 from openai import OpenAI  # Ensure correct import based on your OpenAI library version
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import logging
 
 app = Flask(__name__)
 
@@ -24,7 +24,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Default customized prompt
 DEFAULT_PROMPT = """Succinctly organize the changes made by the attending to the resident's radiology reports into: 
-1) missed major findings (findings discussed by the attending but not by the resident that also fit under these categories: retained sponge or other clinically significant foreign body, mass or tumor, malpositioned line or tube of immediate clinical concern, life-threatening hemorrhage or vascular disruption, necrotizing fasciitis, free air or active leakage from the GI tract, ectopic pregnancy, intestinal ischemia or portomesenteric gas, ovarian torsion, testicular torsion, placental abruption, absent perfusion in a postoperative transplant, renal collecting system obstruction with signs of infection, acute cholecystitis, intracranial hemorrhage, midline shift, brain herniation, cerebral infarction or abscess or meningoencephalitis, airway compromise, abscess or discitis,  hemorrhage, cord compression or unstable spine fracture or transection, acute cord hemorrhage or infarct, pneumothorax, large pericardial effusion, findings suggestive of active TB, impending pathologic fracture, acute fracture, absent perfusion in a postoperative kidney, brain death, high probability ventilation/perfusion (VQ) lung scan, arterial dissection or occlusion, acute thrombotic or embolic event including DVT and pulmonary thromboembolism, and aneurysm or vascular disruption), 
+1) missed major findings (findings discussed by the attending but not by the resident that also fit under these categories: retained sponge or other clinically significant foreign body, mass or tumor, malpositioned line or tube of immediate clinical concern, life-threatening hemorrhage or vascular disruption, necrotizing fasciitis, free air or active leakage from the GI tract, ectopic pregnancy, intestinal ischemia or portomesenteric gas, ovarian torsion, testicular torsion, placental abruption, absent perfusion in a postoperative transplant, renal collecting system obstruction with signs of infection, acute cholecystitis, intracranial hemorrhage, midline shift, brain herniation, cerebral infarction or abscess or meningoencephalitis, airway compromise, abscess or discitis, hemorrhage, cord compression or unstable spine fracture or transection, acute cord hemorrhage or infarct, pneumothorax, large pericardial effusion, findings suggestive of active TB, impending pathologic fracture, acute fracture, absent perfusion in a postoperative kidney, brain death, high probability ventilation/perfusion (VQ) lung scan, arterial dissection or occlusion, acute thrombotic or embolic event including DVT and pulmonary thromboembolism, and aneurysm or vascular disruption), 
 2) missed minor findings (this includes all other pathologies not in the above list that were discussed by the attending but not by the resident), and 
 3) clarified descriptions of findings (this includes findings removed by the attending, findings re-worded by the attending, etc). 
 Assume the attending's version was correct, and anything not included by the attending but was included by the resident should have been left out by the resident. Keep your answers brief and to the point. The reports are: 
@@ -245,268 +245,248 @@ def index():
             logger.info(f"Completed case extraction and processing. Number of cases extracted: {len(case_data)}")
             logger.debug(f"Extracted case_data: {json.dumps(case_data, indent=2)}")  # Detailed debug log
 
-    # For testing: Override case_data with a known minimal dataset if it's empty
-    if not case_data:
-        case_data = [
-            {
-                'case_num': '1',
-                'resident_report': 'The images show a mass in the upper lobe.',
-                'attending_report': 'The images show a large mass in the upper lobe with signs of necrotizing pneumonia.',
-                'percentage_change': 25.0,
-                'diff': 'The images show a <span style="color:lightgreen;">large </span>mass in the upper lobe with signs of <span style="color:lightgreen;">necrotizing pneumonia.</span><br><br>',
-                'summary': {
-                    'case_number': '1',
-                    'major_findings': ["Necrotizing pneumonia"],
-                    'minor_findings': ["Large mass"],
-                    'clarifications': [],
-                    'score': 4
-                }
-            }
-        ]
-        logger.info("Using minimal test case_data for rendering.")
-
     # Log the case_data before passing to the template
     logger.info(f"Passing {len(case_data)} cases to the template.")
     logger.debug(f"case_data being passed: {json.dumps(case_data, indent=2)}")  # Detailed debug log
 
     template = """
-    <html>
-        <head>
-            <title>Radiology Report Diff & Summarizer</title>
-            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
-            <!-- Added dotlottie-player script -->
-            <script src="https://unpkg.com/@dotlottie/player-component@2.7.12/dist/dotlottie-player.mjs" type="module"></script>
-            <style>
-                body { background-color: #1e1e1e; color: #dcdcdc; font-family: Arial, sans-serif; }
-                textarea, input, button { background-color: #333333; color: #dcdcdc; border: 1px solid #555; }
-                textarea { background-color: #333333 !important; color: #dcdcdc !important; border: 1px solid #555 !important; }
-                h2, h3, h4 { color: #f0f0f0; font-weight: normal; }
-                .diff-output, .summary-output { margin-top: 20px; padding: 15px; background-color: #2e2e2e; border-radius: 8px; border: 1px solid #555; }
-                pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; }
-                .nav-tabs .nav-link { background-color: #333; border-color: #555; color: #dcdcdc; }
-                .nav-tabs .nav-link.active { background-color: #007bff; border-color: #007bff #007bff #333; color: white; }
+<html>
+    <head>
+        <title>Radiology Report Diff & Summarizer</title>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
+        <!-- Added dotlottie-player script -->
+        <script src="https://unpkg.com/@dotlottie/player-component@2.7.12/dist/dotlottie-player.mjs" type="module"></script>
+        <style>
+            body { background-color: #1e1e1e; color: #dcdcdc; font-family: Arial, sans-serif; }
+            textarea, input, button { background-color: #333333; color: #dcdcdc; border: 1px solid #555; }
+            textarea { background-color: #333333 !important; color: #dcdcdc !important; border: 1px solid #555 !important; }
+            h2, h3, h4 { color: #f0f0f0; font-weight: normal; }
+            .diff-output, .summary-output { margin-top: 20px; padding: 15px; background-color: #2e2e2e; border-radius: 8px; border: 1px solid #555; }
+            pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; }
+            .nav-tabs .nav-link { background-color: #333; border-color: #555; color: #dcdcdc; }
+            .nav-tabs .nav-link.active { background-color: #007bff; border-color: #007bff #007bff #333; color: white; }
 
-                /* Scroll-to-top button */
-                #scrollToTopBtn {
-                        position: fixed;
-                        right: 20px;
-                        bottom: 20px;
-                        background-color: #007bff;
-                        color: white;
-                        padding: 10px 15px;
-                        border-radius: 15px;
-                        border: none;
-                        cursor: pointer;
-                        z-index: 1000;
-                }
-                #scrollToTopBtn:hover {
-                        background-color: #0056b3;
-                }
+            /* Scroll-to-top button */
+            #scrollToTopBtn {
+                    position: fixed;
+                    right: 20px;
+                    bottom: 20px;
+                    background-color: #007bff;
+                    color: white;
+                    padding: 10px 15px;
+                    border-radius: 15px;
+                    border: none;
+                    cursor: pointer;
+                    z-index: 1000;
+            }
+            #scrollToTopBtn:hover {
+                    background-color: #0056b3;
+            }
 
-                /* Links styling for night mode */
-                a {
-                        color: #66ccff; /* A softer blue that is easier on the eyes in night mode */
-                        text-decoration: none; /* Removes underline */
-                }
-                a:hover {
-                        color: #99e6ff; /* A lighter blue for hover state */
-                        text-decoration: none; /* Ensures no underline on hover */
-                }
+            /* Links styling for night mode */
+            a {
+                    color: #66ccff; /* A softer blue that is easier on the eyes in night mode */
+                    text-decoration: none; /* Removes underline */
+            }
+            a:hover {
+                    color: #99e6ff; /* A lighter blue for hover state */
+                    text-decoration: none; /* Ensures no underline on hover */
+            }
 
-                /* Loading animation styling */
-                #loadingAnimation {
-                    display: none; /* Hidden by default */
-                    margin-top: 20px;
-                }
-            </style>
+            /* Loading animation styling */
+            #loadingAnimation {
+                display: none; /* Hidden by default */
+                margin-top: 20px;
+            }
+        </style>
 
-        </head>
-        <body>
-            <div class="container">
-                <h2 class="mt-4">Compare Revisions & Summarize Reports</h2>
-                <form method="POST" id="reportForm">
-                    <div class="form-group mb-3">
-                        <label for="report_text">Paste your reports block here:</label>
-                        <textarea id="report_text" name="report_text" class="form-control" rows="10">{{ request.form.get('report_text', '') }}</textarea>
-                    </div>
-                    <div class="form-group mb-3">
-                        <label for="custom_prompt">Customize your OpenAI API prompt:</label>
-                        <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="5">{{ custom_prompt }}</textarea>
-                    </div>
-                    <button type="submit" class="btn btn-primary">Compare & Summarize Reports</button>
-                    <!-- Added dotlottie-player for loading animation -->
-                    <dotlottie-player id="loadingAnimation" src="https://lottie.host/817661a8-2608-4435-89a5-daa620a64c36/WtsFI5zdEK.lottie" background="transparent" speed="1" style="width: 300px; height: 300px;" loop autoplay></dotlottie-player>
-                </form>
-                {% if case_data %}
-                    <h3 id="majorFindings">Major Findings Missed</h3>
-                    <ul>
-                        {% for case in case_data %}
-                            {% if case.summary and case.summary.major_findings %}
-                                {% for finding in case.summary.major_findings %}
-                                    <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
-                                {% endfor %}
-                            {% endif %}
-                        {% endfor %}
-                    </ul>
-                    <h3>Minor Findings Missed</h3>
-                    <ul>
-                        {% for case in case_data %}
-                            {% if case.summary and case.summary.minor_findings %}
-                                {% for finding in case.summary.minor_findings %}
-                                    <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
-                                {% endfor %}
-                            {% endif %}
-                        {% endfor %}
-                    </ul>
-                    <h3>Case Navigation</h3>
-                {% endif %}
-                <!-- Always include these elements to prevent JS errors -->
-                <div class="btn-group" role="group" aria-label="Sort Options">
-                    <button type="button" class="btn btn-secondary" onclick="sortCases('case_number')">Sort by Case Number</button>
-                    <button type="button" class="btn btn-secondary" onclick="sortCases('percentage_change')">Sort by Percentage Change</button>
-                    <button type="button" class="btn btn-secondary" onclick="sortCases('summary_score')">Sort by Summary Score</button>
+    </head>
+    <body>
+        <div class="container">
+            <h2 class="mt-4">Compare Revisions & Summarize Reports</h2>
+            <form method="POST" id="reportForm">
+                <div class="form-group mb-3">
+                    <label for="report_text">Paste your reports block here:</label>
+                    <textarea id="report_text" name="report_text" class="form-control" rows="10">{{ request.form.get('report_text', '') }}</textarea>
                 </div>
-                <ul id="caseNav"></ul>
-                <div id="caseContainer"></div>
+                <div class="form-group mb-3">
+                    <label for="custom_prompt">Customize your OpenAI API prompt:</label>
+                    <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="5">{{ custom_prompt }}</textarea>
+                </div>
+                <button type="submit" class="btn btn-primary">Compare & Summarize Reports</button>
+                <!-- Added dotlottie-player for loading animation -->
+                <dotlottie-player id="loadingAnimation" src="https://lottie.host/817661a8-2608-4435-89a5-daa620a64c36/WtsFI5zdEK.lottie" background="transparent" speed="1" style="width: 300px; height: 300px;" loop autoplay></dotlottie-player>
+            </form>
+            {% if case_data %}
+                <h3 id="majorFindings">Major Findings Missed</h3>
+                <ul>
+                    {% for case in case_data %}
+                        {% if case.summary and case.summary.major_findings %}
+                            {% for finding in case.summary.major_findings %}
+                                <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
+                            {% endfor %}
+                        {% endif %}
+                    {% endfor %}
+                </ul>
+                <h3>Minor Findings Missed</h3>
+                <ul>
+                    {% for case in case_data %}
+                        {% if case.summary and case.summary.minor_findings %}
+                            {% for finding in case.summary.minor_findings %}
+                                <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
+                            {% endfor %}
+                        {% endif %}
+                    {% endfor %}
+                </ul>
+                <h3>Case Navigation</h3>
+            {% endif %}
+            <!-- Always include these elements to prevent JS errors -->
+            <div class="btn-group" role="group" aria-label="Sort Options">
+                <button type="button" class="btn btn-secondary" onclick="sortCases('case_number')">Sort by Case Number</button>
+                <button type="button" class="btn btn-secondary" onclick="sortCases('percentage_change')">Sort by Percentage Change</button>
+                <button type="button" class="btn btn-secondary" onclick="sortCases('summary_score')">Sort by Summary Score</button>
             </div>
-            <!-- Added scroll-to-top button -->
-            <button id="scrollToTopBtn" onclick="scrollToTop()">Top ⬆</button>
-            <script>
-                let caseData = {{ case_data | tojson }};
-                console.log("Received caseData:", caseData); // Debugging
+            <ul id="caseNav"></ul>
+            <div id="caseContainer"></div>
+        </div>
+        <!-- Added scroll-to-top button -->
+        <button id="scrollToTopBtn" onclick="scrollToTop()">Top ⬆</button>
+        <script>
+            let caseData = {{ case_data | tojson }};
+            console.log("Received caseData:", caseData); // Debugging
 
-                function sortCases(option) {
-                    console.log("Sorting cases by:", option); // Debugging
-                    if (option === "case_number") {
-                        caseData.sort((a, b) => parseInt(a.case_num) - parseInt(b.case_num));
-                    } else if (option === "percentage_change") {
-                        caseData.sort((a, b) => b.percentage_change - a.percentage_change);
-                    } else if (option === "summary_score") {
-                        caseData.sort((a, b) => (b.summary && b.summary.score || 0) - (a.summary && a.summary.score || 0));
-                    }
-                    console.log("Sorted caseData:", caseData); // Debugging
-                    displayCases();
-                    displayNavigation();
+            function sortCases(option) {
+                console.log("Sorting cases by:", option); // Debugging
+                if (option === "case_number") {
+                    caseData.sort((a, b) => parseInt(a.case_num) - parseInt(b.case_num));
+                } else if (option === "percentage_change") {
+                    caseData.sort((a, b) => b.percentage_change - a.percentage_change);
+                } else if (option === "summary_score") {
+                    caseData.sort((a, b) => (b.summary && b.summary.score || 0) - (a.summary && a.summary.score || 0));
                 }
+                console.log("Sorted caseData:", caseData); // Debugging
+                displayCases();
+                displayNavigation();
+            }
 
-                function displayNavigation() {
-                    const nav = document.getElementById('caseNav');
-                    if (!nav) {
-                        console.error("Element with id 'caseNav' not found.");
-                        return; // Prevent errors if element not found
-                    }
-                    nav.innerHTML = '';
-                    if (caseData.length === 0) {
-                        nav.innerHTML = '<li>No cases to display.</li>';
-                        console.log("No cases to display in navigation.");
-                        return;
-                    }
-                    console.log("Displaying navigation for cases.");
-                    caseData.forEach(caseObj => {
-                        nav.innerHTML += `
-                            <li>
-                                <a href="#case${caseObj.case_num}">Case ${caseObj.case_num}</a> - ${caseObj.percentage_change}% change - Score: ${(caseObj.summary && caseObj.summary.score) || 'N/A'}
-                            </li>
-                        `;
-                    });
-                    console.log("Navigation populated.");
+            function displayNavigation() {
+                const nav = document.getElementById('caseNav');
+                if (!nav) {
+                    console.error("Element with id 'caseNav' not found.");
+                    return; // Prevent errors if element not found
                 }
+                nav.innerHTML = '';
+                if (caseData.length === 0) {
+                    nav.innerHTML = '<li>No cases to display.</li>';
+                    console.log("No cases to display in navigation.");
+                    return;
+                }
+                console.log("Displaying navigation for cases.");
+                caseData.forEach(caseObj => {
+                    nav.innerHTML += `
+                        <li>
+                            <a href="#case${caseObj.case_num}">Case ${caseObj.case_num}</a> - ${caseObj.percentage_change}% change - Score: ${(caseObj.summary && caseObj.summary.score) || 'N/A'}
+                        </li>
+                    `;
+                });
+                console.log("Navigation populated.");
+            }
 
-                function displayCases() {
-                    const container = document.getElementById('caseContainer');
-                    if (!container) {
-                        console.error("Element with id 'caseContainer' not found.");
-                        return; // Prevent errors if element not found
-                    }
-                    container.innerHTML = '';
-                    if (caseData.length === 0) {
-                        container.innerHTML = '<p>No cases to display.</p>';
-                        console.log("No cases to display in container.");
-                        return;
-                    }
-                    console.log("Displaying cases.");
-                    caseData.forEach(caseObj => {
-                        if (!caseObj.summary) {
-                            container.innerHTML += `
-                                <div id="case${caseObj.case_num}">
-                                    <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
-                                    <p style="color: red;"><strong>Error:</strong> Unable to generate summary for this case.</p>
-                                    <hr>
-                                </div>
-                            `;
-                            console.log(`Displayed error for case ${caseObj.case_num}.`);
-                            return;
-                        }
+            function displayCases() {
+                const container = document.getElementById('caseContainer');
+                if (!container) {
+                    console.error("Element with id 'caseContainer' not found.");
+                    return; // Prevent errors if element not found
+                }
+                container.innerHTML = '';
+                if (caseData.length === 0) {
+                    container.innerHTML = '<p>No cases to display.</p>';
+                    console.log("No cases to display in container.");
+                    return;
+                }
+                console.log("Displaying cases.");
+                caseData.forEach(caseObj => {
+                    if (!caseObj.summary) {
                         container.innerHTML += `
                             <div id="case${caseObj.case_num}">
                                 <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
-                                <ul class="nav nav-tabs" id="myTab${caseObj.case_num}" role="tablist">
-                                    <li class="nav-item" role="presentation">
-                                        <button class="nav-link active" id="summary-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#summary${caseObj.case_num}" type="button" role="tab">Summary Report</button>
-                                    </li>
-                                    <li class="nav-item" role="presentation">
-                                        <button class="nav-link" id="combined-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#combined${caseObj.case_num}" type="button" role="tab">Combined Report</button>
-                                    </li>
-                                    <li class="nav-item" role="presentation">
-                                        <button class="nav-link" id="resident-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#resident${caseObj.case_num}" type="button" role="tab">Resident Report</button>
-                                    </li>
-                                    <li class="nav-item" role="presentation">
-                                        <button class="nav-link" id="attending-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#attending${caseObj.case_num}" type="button" role="tab">Attending Report</button>
-                                    </li>
-                                </ul>
-                                <div class="tab-content" id="myTabContent${caseObj.case_num}">
-                                    <div class="tab-pane fade show active" id="summary${caseObj.case_num}" role="tabpanel">
-                                        <div class="summary-output">
-                                            <p><strong>Score:</strong> ${caseObj.summary.score || 'N/A'}</p>
-                                            ${caseObj.summary.major_findings && caseObj.summary.major_findings.length > 0 ? `<p><strong>Major Findings:</strong></p><ul>${caseObj.summary.major_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
-                                            ${caseObj.summary.minor_findings && caseObj.summary.minor_findings.length > 0 ? `<p><strong>Minor Findings:</strong></p><ul>${caseObj.summary.minor_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
-                                            ${caseObj.summary.clarifications && caseObj.summary.clarifications.length > 0 ? `<p><strong>Clarifications:</strong></p><ul>${caseObj.summary.clarifications.map(clarification => `<li>${clarification}</li>`).join('')}</ul>` : ''}
-                                        </div>
-                                    </div>
-                                    <div class="tab-pane fade" id="combined${caseObj.case_num}" role="tabpanel">
-                                        <div class="diff-output">${caseObj.diff}</div>
-                                    </div>
-                                    <div class="tab-pane fade" id="resident${caseObj.case_num}" role="tabpanel">
-                                        <div class="diff-output"><pre>${caseObj.resident_report}</pre></div>
-                                    </div>
-                                    <div class="tab-pane fade" id="attending${caseObj.case_num}" role="tabpanel">
-                                        <div class="diff-output"><pre>${caseObj.attending_report}</pre></div>
-                                    </div>
-                                </div>
+                                <p style="color: red;"><strong>Error:</strong> Unable to generate summary for this case.</p>
                                 <hr>
                             </div>
                         `;
-                        console.log(`Displayed case ${caseObj.case_num}.`);
-                    });
-                    console.log("All cases displayed.");
-                }
-
-                document.addEventListener("DOMContentLoaded", () => {
-                    if (caseData && caseData.length > 0) {
-                        console.log("Case data available. Rendering cases and navigation.");
-                        displayCases();
-                        displayNavigation();
-                    } else {
-                        console.log("No case data available to display.");
+                        console.log(`Displayed error for case ${caseObj.case_num}.`);
+                        return;
                     }
+                    container.innerHTML += `
+                        <div id="case${caseObj.case_num}">
+                            <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
+                            <ul class="nav nav-tabs" id="myTab${caseObj.case_num}" role="tablist">
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link active" id="summary-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#summary${caseObj.case_num}" type="button" role="tab">Summary Report</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="combined-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#combined${caseObj.case_num}" type="button" role="tab">Combined Report</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="resident-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#resident${caseObj.case_num}" type="button" role="tab">Resident Report</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="attending-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#attending${caseObj.case_num}" type="button" role="tab">Attending Report</button>
+                                </li>
+                            </ul>
+                            <div class="tab-content" id="myTabContent${caseObj.case_num}">
+                                <div class="tab-pane fade show active" id="summary${caseObj.case_num}" role="tabpanel">
+                                    <div class="summary-output">
+                                        <p><strong>Score:</strong> ${caseObj.summary.score || 'N/A'}</p>
+                                        ${caseObj.summary.major_findings && caseObj.summary.major_findings.length > 0 ? `<p><strong>Major Findings:</strong></p><ul>${caseObj.summary.major_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
+                                        ${caseObj.summary.minor_findings && caseObj.summary.minor_findings.length > 0 ? `<p><strong>Minor Findings:</strong></p><ul>${caseObj.summary.minor_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
+                                        ${caseObj.summary.clarifications && caseObj.summary.clarifications.length > 0 ? `<p><strong>Clarifications:</strong></p><ul>${caseObj.summary.clarifications.map(clarification => `<li>${clarification}</li>`).join('')}</ul>` : ''}
+                                    </div>
+                                </div>
+                                <div class="tab-pane fade" id="combined${caseObj.case_num}" role="tabpanel">
+                                    <div class="diff-output">${caseObj.diff}</div>
+                                </div>
+                                <div class="tab-pane fade" id="resident${caseObj.case_num}" role="tabpanel">
+                                    <div class="diff-output"><pre>${caseObj.resident_report}</pre></div>
+                                </div>
+                                <div class="tab-pane fade" id="attending${caseObj.case_num}" role="tabpanel">
+                                    <div class="diff-output"><pre>${caseObj.attending_report}</pre></div>
+                                </div>
+                            </div>
+                            <hr>
+                        </div>
+                    `;
+                    console.log(`Displayed case ${caseObj.case_num}.`);
                 });
+                console.log("All cases displayed.");
+            }
 
-                // Scroll-to-top function
-                function scrollToTop() {
-                    const majorFindingsSection = document.getElementById('majorFindings');
-                    if (majorFindingsSection) {
-                        majorFindingsSection.scrollIntoView({ behavior: 'smooth' });
-                    }
+            document.addEventListener("DOMContentLoaded", () => {
+                if (caseData && caseData.length > 0) {
+                    console.log("Case data available. Rendering cases and navigation.");
+                    displayCases();
+                    displayNavigation();
+                } else {
+                    console.log("No case data available to display.");
                 }
+            });
 
-                // Show loading animation on form submission
-                document.getElementById('reportForm').addEventListener('submit', function() {
-                    document.getElementById('loadingAnimation').style.display = 'block';
-                });
-            </script>
-            <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-        </body>
-    </html>
+            // Scroll-to-top function
+            function scrollToTop() {
+                const majorFindingsSection = document.getElementById('majorFindings');
+                if (majorFindingsSection) {
+                    majorFindingsSection.scrollIntoView({ behavior: 'smooth' });
+                }
+            }
+
+            // Show loading animation on form submission
+            document.getElementById('reportForm').addEventListener('submit', function() {
+                document.getElementById('loadingAnimation').style.display = 'block';
+            });
+        </script>
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    </body>
+</html>
     """
 
     return render_template_string(template, case_data=case_data, custom_prompt=custom_prompt)
