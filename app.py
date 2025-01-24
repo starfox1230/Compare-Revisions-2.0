@@ -85,13 +85,10 @@ def parse_cases(text):
             logger.warning(f"Case {case_num} is missing Resident or Attending Report.")
     return parsed_cases
 
+# AI function to get a structured JSON summary of report differences
 def get_summary(case_text, custom_prompt, case_number):
-    """
-    Sends the resident and attending reports to OpenAI and retrieves the summary JSON.
-    """
     try:
-        logger.info(f"Processing case {case_number}")
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that outputs structured JSON summaries of radiology report differences."},
@@ -100,14 +97,9 @@ def get_summary(case_text, custom_prompt, case_number):
             max_tokens=2000,
             temperature=0.5
         )
-        response_content = response.choices[0].message['content']
-        logger.debug(f"Received response for case {case_number}: {response_content}")
+        response_content = response.choices[0].message.content
         return json.loads(response_content)
-    except json.JSONDecodeError as jde:
-        logger.error(f"JSON decode error for case {case_number}: {jde}")
-        return {"case_number": case_number, "error": "Invalid JSON response from AI."}
     except Exception as e:
-        logger.error(f"Error processing case {case_number}: {e}")
         return {"case_number": case_number, "error": "Error processing AI"}
 
 @app.route('/', methods=['GET', 'POST'])
