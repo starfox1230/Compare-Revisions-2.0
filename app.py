@@ -181,7 +181,12 @@ def process_cases(cases_data, custom_prompt, max_workers=20):
 
 # Extract cases and add AI summary tab
 def extract_cases(text, custom_prompt):
-    cases = re.split(r'\bCase\s+(\d+)', text, flags=re.IGNORECASE)
+    # ----------------------------------------------------------------------
+    # CHANGE: Updated the regex to handle "Case 1" or "Case Number: 1"
+    # ----------------------------------------------------------------------
+    # Original: cases = re.split(r'\bCase\s+(\d+)', text, flags=re.IGNORECASE)
+    cases = re.split(r'\bCase(?:\s+Number)?:\s+(\d+)', text, flags=re.IGNORECASE)
+
     cases_data = []
     parsed_cases = []
 
