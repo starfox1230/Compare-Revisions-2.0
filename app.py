@@ -181,13 +181,17 @@ def process_cases(cases_data, custom_prompt, max_workers=20):
 
 # Extract cases and add AI summary tab
 def extract_cases(text, custom_prompt):
-    # ----------------------------------------------------------------------
-    # CHANGE: Updated the regex to handle "Case X" at the start of a line
-    # ----------------------------------------------------------------------
-    # Original: cases = re.split(r'\bCase\s+(\d+)', text, flags=re.IGNORECASE)
-    cases = re.split(r'^Case(?:\s+Number)?:\s+(\d+)', text, flags=re.IGNORECASE | re.MULTILINE)
+    # Normalize line endings to Unix style
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    logger.debug("Normalized line endings.")
     
-    logger.debug("SPLIT RESULT FOR CASES: " + json.dumps(cases, indent=2))  # Debugging
+    # Split on 'Case <number>' at the start of a line
+    cases = re.split(r'(?m)^Case\s+(\d+)', text, flags=re.IGNORECASE)
+    logger.debug(f"SPLIT RESULT FOR CASES: {cases}")
+    
+    logger.info(f"Total elements after split: {len(cases)}")
+    for idx, element in enumerate(cases):
+        logger.debug(f"Element {idx}: {element[:100]}{'...' if len(element) > 100 else ''}")
     
     cases_data = []
     parsed_cases = []
@@ -195,10 +199,14 @@ def extract_cases(text, custom_prompt):
     # Extract all cases and prepare data for concurrent processing
     for i in range(1, len(cases), 2):
         case_num = cases[i]
-        case_content = cases[i + 1].strip()
+        case_content = cases[i + 1].strip() if i + 1 < len(cases) else ""
+        logger.debug(f"Processing Case {case_num}:")
+        logger.debug(f"Case Content: {case_content[:200]}{'...' if len(case_content) > 200 else ''}")
+        
         reports = re.split(r'\s*(Attending\s+Report\s*:|Resident\s+Report\s*:)\s*', case_content, flags=re.IGNORECASE)
-        if len(reports) >= 5:
-            # Ensure both Attending and Resident Reports are present
+        logger.debug(f"Reports split: {reports}")
+        
+        if len(reports) >= 3:
             attending_report = reports[2].strip()
             resident_report = reports[4].strip() if len(reports) > 4 else ""
             case_text = f"Resident Report: {resident_report}\nAttending Report: {attending_report}"
@@ -227,9 +235,8 @@ def extract_cases(text, custom_prompt):
                 resident_report = case_content.split("\nAttending Report:")[0].replace("Resident Report: ", "").strip()
                 attending_report = case_content.split("\nAttending Report:")[1].strip()
             except IndexError:
-                logger.error(f"Error splitting reports for case {case_num}.")
-                resident_report = ""
-                attending_report = ""
+                logger.error(f"Error parsing reports for case {case_num}.")
+                continue
             parsed_cases.append({
                 'case_num': str(case_num),  # Ensure case_num is a string
                 'resident_report': resident_report,
@@ -254,7 +261,6 @@ def index():
             logger.warning("No report text provided.")
         else:
             logger.info("Starting case extraction and processing.")
-            logger.debug("RAW TEXT BLOCK:\n" + text_block)  # Debugging
             case_data = extract_cases(text_block, custom_prompt)
             logger.info(f"Completed case extraction and processing. Number of cases extracted: {len(case_data)}")
             logger.debug(f"Extracted case_data: {json.dumps(case_data, indent=2)}")  # Detailed debug log
