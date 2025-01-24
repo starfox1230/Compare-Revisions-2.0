@@ -3,7 +3,7 @@ import difflib
 import re
 import os
 import json
-from openai import OpenAI  # Ensure this is the correct import based on your working version
+from openai import OpenAI  # Ensure correct import based on your working version
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 
@@ -169,6 +169,7 @@ def process_cases(cases_data, custom_prompt, max_workers=20):
             executor.submit(get_summary, case_text, custom_prompt, case_num): case_num
             for case_text, case_num in cases_data
         }
+        logger.info(f"Submitted {len(cases_data)} cases for concurrent processing.")
 
         for future in as_completed(future_to_case):
             case_num = future_to_case[future]
@@ -180,13 +181,16 @@ def process_cases(cases_data, custom_prompt, max_workers=20):
                 logger.error(f"Error processing case {case_num}: {e}")
                 parsed_json = {"case_number": case_num, "error": "Error processing AI"}
             structured_output.append(parsed_json)
+    logger.info(f"Completed processing {len(structured_output)} summaries.")
     return structured_output
 
 # Extract cases and add AI summary tab
 def extract_cases(text, custom_prompt):
     cases = re.split(r'\bCase\s+(\d+)', text, flags=re.IGNORECASE)
-    parsed_cases = []
     cases_data = []
+    parsed_cases = []
+    
+    # Extract all cases and prepare data for concurrent processing
     for i in range(1, len(cases), 2):
         case_num = cases[i]
         case_content = cases[i + 1].strip()
@@ -194,9 +198,9 @@ def extract_cases(text, custom_prompt):
         if len(reports) >= 3:
             attending_report = reports[2].strip()
             resident_report = reports[4].strip() if len(reports) > 4 else ""
-            logger.info(f"Extracting case {case_num}")
             case_text = f"Resident Report: {resident_report}\nAttending Report: {attending_report}"
             cases_data.append((case_text, case_num))
+            logger.info(f"Prepared case {case_num} for processing.")
         else:
             logger.warning(f"Case {case_num} does not contain both Attending and Resident Reports.")
 
@@ -207,7 +211,7 @@ def extract_cases(text, custom_prompt):
     # Process all summaries concurrently
     ai_summaries = process_cases(cases_data, custom_prompt, max_workers=20)
 
-    # Build the parsed_cases list with summaries
+    # Map each summary to its corresponding case
     for ai_summary in ai_summaries:
         case_num = ai_summary.get('case_number')
         if not case_num:
@@ -224,8 +228,9 @@ def extract_cases(text, custom_prompt):
                 'attending_report': attending_report,
                 'percentage_change': calculate_change_percentage(resident_report, remove_attending_review_line(attending_report)),
                 'diff': create_diff_by_section(resident_report, attending_report),
-                'summary': ai_summary if 'error' not in ai_summary else None  # Exclude summaries with errors
+                'summary': ai_summary if 'error' not in ai_summary else None
             })
+            logger.info(f"Assigned summary to case {case_num}.")
     return parsed_cases
 
 @app.route('/', methods=['GET', 'POST'])
