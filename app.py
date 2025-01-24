@@ -2,20 +2,9 @@ from flask import Flask, render_template_string, request
 import re
 import os
 import json
-import logging
 from openai import OpenAI
 
 app = Flask(__name__)
-
-# Configure logging with timestamp and log level
-logging.basicConfig(
-    level=logging.INFO,  # Set to INFO for general logs
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
 
 # Initialize OpenAI API key
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -51,7 +40,7 @@ def parse_cases(text):
     ...
     Resident Report:
     ...
-    
+
     Case <number>
     Attending Report:
     ...
@@ -61,28 +50,26 @@ def parse_cases(text):
     # Split the text into cases based on 'Case <number>'
     cases = re.split(r'(?m)^Case\s+(\d+)', text, flags=re.IGNORECASE)
     parsed_cases = []
-    
+
     # The split will result in a list where even indices are non-capturing text and odd indices are case numbers
     for i in range(1, len(cases), 2):
         case_num = cases[i].strip()
         case_content = cases[i + 1].strip() if (i + 1) < len(cases) else ""
-        
+
         # Extract Attending Report
         attending_match = re.search(r'Attending Report:\s*(.*?)(Resident Report:|$)', case_content, re.DOTALL | re.IGNORECASE)
         attending = attending_match.group(1).strip() if attending_match else ""
-        
+
         # Extract Resident Report
         resident_match = re.search(r'Resident Report:\s*(.*)', case_content, re.DOTALL | re.IGNORECASE)
         resident = resident_match.group(1).strip() if resident_match else ""
-        
+
         if attending and resident:
             parsed_cases.append({
                 'case_num': case_num,
                 'resident': resident,
                 'attending': attending
             })
-        else:
-            logger.warning(f"Case {case_num} is missing Resident or Attending Report.")
     return parsed_cases
 
 # AI function to get a structured JSON summary of report differences
@@ -99,7 +86,7 @@ def get_summary(case_text, custom_prompt, case_number):
         )
         response_content = response.choices[0].message.content
         return json.loads(response_content)
-    except Exception as e:
+    except Exception:
         return {"case_number": case_number, "error": "Error processing AI"}
 
 @app.route('/', methods=['GET', 'POST'])
@@ -107,20 +94,15 @@ def index():
     custom_prompt = request.form.get('custom_prompt', DEFAULT_PROMPT)
     summaries = []
     input_text = ""
-    
+
     if request.method == 'POST':
         input_text = request.form.get('report_text', '').strip()
-        if not input_text:
-            logger.warning("No report text provided.")
-        else:
-            logger.info("Starting case extraction and processing.")
+        if input_text:
             cases = parse_cases(input_text)
-            logger.info(f"Found {len(cases)} cases to process.")
             for case in cases:
                 case_text = f"Resident Report: {case['resident']}\nAttending Report: {case['attending']}"
                 summary = get_summary(case_text, custom_prompt, case['case_num'])
                 summaries.append(summary)
-            logger.info("Completed processing all cases.")
 
     # Simple HTML Template
     template = """
@@ -209,4 +191,4 @@ def index():
     return render_template_string(template, summaries=summaries, custom_prompt=custom_prompt, input_text=input_text)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run()
