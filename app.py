@@ -46,28 +46,36 @@ def parse_cases(text):
     """
     Parses the input text into individual cases.
     Expected format:
-    Case 1
-    Resident Report:
-    ...
+    Case <number>
     Attending Report:
+    ...
+    Resident Report:
     ...
     
-    Case 2
-    Resident Report:
-    ...
+    Case <number>
     Attending Report:
     ...
+    Resident Report:
+    ...
     """
+    # Split the text into cases based on 'Case <number>'
     cases = re.split(r'(?m)^Case\s+(\d+)', text, flags=re.IGNORECASE)
     parsed_cases = []
+    
+    # The split will result in a list where even indices are non-capturing text and odd indices are case numbers
     for i in range(1, len(cases), 2):
         case_num = cases[i].strip()
-        case_content = cases[i + 1].strip() if i + 1 < len(cases) else ""
-        resident_match = re.search(r'Resident Report:\s*(.*?)\s*Attending Report:', case_content, re.DOTALL | re.IGNORECASE)
-        attending_match = re.search(r'Attending Report:\s*(.*)', case_content, re.DOTALL | re.IGNORECASE)
-        resident = resident_match.group(1).strip() if resident_match else ""
+        case_content = cases[i + 1].strip() if (i + 1) < len(cases) else ""
+        
+        # Extract Attending Report
+        attending_match = re.search(r'Attending Report:\s*(.*?)(Resident Report:|$)', case_content, re.DOTALL | re.IGNORECASE)
         attending = attending_match.group(1).strip() if attending_match else ""
-        if resident and attending:
+        
+        # Extract Resident Report
+        resident_match = re.search(r'Resident Report:\s*(.*)', case_content, re.DOTALL | re.IGNORECASE)
+        resident = resident_match.group(1).strip() if resident_match else ""
+        
+        if attending and resident:
             parsed_cases.append({
                 'case_num': case_num,
                 'resident': resident,
@@ -107,7 +115,7 @@ def index():
     custom_prompt = request.form.get('custom_prompt', DEFAULT_PROMPT)
     summaries = []
     input_text = ""
-
+    
     if request.method == 'POST':
         input_text = request.form.get('report_text', '').strip()
         if not input_text:
@@ -142,11 +150,11 @@ def index():
             <form method="POST">
                 <div class="mb-3">
                     <label for="report_text" class="form-label">Paste your reports here:</label>
-                    <textarea class="form-control" id="report_text" name="report_text" rows="10">{{ input_text }}</textarea>
+                    <textarea class="form-control" id="report_text" name="report_text" rows="15">{{ input_text }}</textarea>
                 </div>
                 <div class="mb-3">
                     <label for="custom_prompt" class="form-label">Customize OpenAI Prompt (optional):</label>
-                    <textarea class="form-control" id="custom_prompt" name="custom_prompt" rows="5">{{ custom_prompt }}</textarea>
+                    <textarea class="form-control" id="custom_prompt" name="custom_prompt" rows="7">{{ custom_prompt }}</textarea>
                 </div>
                 <button type="submit" class="btn btn-primary">Submit</button>
             </form>
