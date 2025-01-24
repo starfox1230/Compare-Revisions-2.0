@@ -228,6 +228,10 @@ def extract_cases(text, custom_prompt):
         if not case_num:
             logger.warning("Summary missing 'case_number'. Skipping.")
             continue  # Skip if case_num is missing
+        
+        # **Convert case_num to string for accurate comparison**
+        case_num = str(case_num)
+        
         # Find the corresponding case content
         case_content = next((ct for ct, num in cases_data if num == case_num), "")
         if case_content:
@@ -238,7 +242,7 @@ def extract_cases(text, custom_prompt):
                 logger.error(f"Error parsing reports for case {case_num}.")
                 continue
             parsed_cases.append({
-                'case_num': str(case_num),  # Ensure case_num is a string
+                'case_num': case_num,  # Already a string
                 'resident_report': resident_report,
                 'attending_report': attending_report,
                 'percentage_change': calculate_change_percentage(resident_report, remove_attending_review_line(attending_report)),
