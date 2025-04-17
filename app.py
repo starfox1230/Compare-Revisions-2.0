@@ -407,11 +407,11 @@ def index():
                 }
                 console.log("Displaying navigation for cases.");
                 caseData.forEach(caseObj => {
-                    nav.innerHTML += 
+                    nav.innerHTML += `
                         <li>
                             <a href="#case${caseObj.case_num}">Case ${caseObj.case_num}</a> - ${caseObj.percentage_change}% change - Score: ${(caseObj.summary && caseObj.summary.score) || 'N/A'}
                         </li>
-                    ;
+                    `;
                 });
                 console.log("Navigation populated.");
             }
@@ -431,17 +431,17 @@ def index():
                 console.log("Displaying cases.");
                 caseData.forEach(caseObj => {
                     if (!caseObj.summary) {
-                        container.innerHTML += 
+                        container.innerHTML += `
                             <div id="case${caseObj.case_num}">
                                 <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
                                 <p style="color: red;"><strong>Error:</strong> Unable to generate summary for this case.</p>
                                 <hr>
                             </div>
-                        ;
-                        console.log(Displayed error for case ${caseObj.case_num}.);
+                        `;
+                        console.log(`Displayed error for case ${caseObj.case_num}.`);
                         return;
                     }
-                    container.innerHTML += 
+                    container.innerHTML += `
                         <div id="case${caseObj.case_num}">
                             <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
                             <ul class="nav nav-tabs" id="myTab${caseObj.case_num}" role="tablist">
@@ -462,9 +462,9 @@ def index():
                                 <div class="tab-pane fade show active" id="summary${caseObj.case_num}" role="tabpanel">
                                     <div class="summary-output">
                                         <p><strong>Score:</strong> ${caseObj.summary.score || 'N/A'}</p>
-                                        ${caseObj.summary.major_findings && caseObj.summary.major_findings.length > 0 ? <p><strong>Major Findings:</strong></p><ul>${caseObj.summary.major_findings.map(finding => <li>${finding}</li>).join('')}</ul> : ''}
-                                        ${caseObj.summary.minor_findings && caseObj.summary.minor_findings.length > 0 ? <p><strong>Minor Findings:</strong></p><ul>${caseObj.summary.minor_findings.map(finding => <li>${finding}</li>).join('')}</ul> : ''}
-                                        ${caseObj.summary.clarifications && caseObj.summary.clarifications.length > 0 ? <p><strong>Clarifications:</strong></p><ul>${caseObj.summary.clarifications.map(clarification => <li>${clarification}</li>).join('')}</ul> : ''}
+                                        ${caseObj.summary.major_findings && caseObj.summary.major_findings.length > 0 ? `<p><strong>Major Findings:</strong></p><ul>${caseObj.summary.major_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
+                                        ${caseObj.summary.minor_findings && caseObj.summary.minor_findings.length > 0 ? `<p><strong>Minor Findings:</strong></p><ul>${caseObj.summary.minor_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
+                                        ${caseObj.summary.clarifications && caseObj.summary.clarifications.length > 0 ? `<p><strong>Clarifications:</strong></p><ul>${caseObj.summary.clarifications.map(clarification => `<li>${clarification}</li>`).join('')}</ul>` : ''}
                                     </div>
                                 </div>
                                 <div class="tab-pane fade" id="combined${caseObj.case_num}" role="tabpanel">
@@ -479,8 +479,8 @@ def index():
                             </div>
                             <hr>
                         </div>
-                    ;
-                    console.log(Displayed case ${caseObj.case_num}.);
+                    `;
+                    console.log(`Displayed case ${caseObj.case_num}.`);
                 });
                 console.log("All cases displayed.");
             }
