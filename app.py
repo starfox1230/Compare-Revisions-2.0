@@ -11,765 +11,509 @@ app = Flask(__name__)
 
 # Configure logging with timestamp and log level
 logging.basicConfig(
-    level=logging.INFO,  # Changed to INFO for production, DEBUG for troubleshooting
+    level=logging.DEBUG,  # Set to DEBUG for detailed logs during troubleshooting
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     handlers=[
-        logging.StreamHandler()  # Log to console
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
 # Initialize OpenAI API key
-# Ensure the OPENAI_API_KEY environment variable is set
-try:
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    if not client.api_key:
-        raise ValueError("OPENAI_API_KEY environment variable not set or empty.")
-    logger.info("OpenAI client initialized successfully.")
-except Exception as e:
-    logger.error(f"Failed to initialize OpenAI client: {e}")
-    # Depending on your application's needs, you might want to exit or handle this differently
-    # For now, we'll let it proceed but log the error. API calls will fail later.
-    client = None # Set client to None to indicate failure
-
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Default customized prompt
-DEFAULT_PROMPT = """Succinctly organize the changes made by the attending to the resident's radiology reports into:
-1) missed major findings (findings discussed by the attending but not by the resident that also fit under these categories: retained sponge or other clinically significant foreign body, mass or tumor, malpositioned line or tube of immediate clinical concern, life-threatening hemorrhage or vascular disruption, necrotizing fasciitis, free air or active leakage from the GI tract, ectopic pregnancy, intestinal ischemia or portomesenteric gas, ovarian torsion, testicular torsion, placental abruption, absent perfusion in a postoperative transplant, renal collecting system obstruction with signs of infection, acute cholecystitis, intracranial hemorrhage, midline shift, brain herniation, cerebral infarction or abscess or meningoencephalitis, airway compromise, abscess or discitis, hemorrhage, cord compression or unstable spine fracture or transection, acute cord hemorrhage or infarct, pneumothorax, large pericardial effusion, findings suggestive of active TB, impending pathologic fracture, acute fracture, absent perfusion in a postoperative kidney, brain death, high probability ventilation/perfusion (VQ) lung scan, arterial dissection or occlusion, acute thrombotic or embolic event including DVT and pulmonary thromboembolism, and aneurysm or vascular disruption),
-2) missed minor findings (this includes all other pathologies not in the above list that were discussed by the attending but not by the resident), and
-3) clarified descriptions of findings (this includes findings removed by the attending, findings re-worded by the attending, etc).
-Assume the attending's version was correct, and anything not included by the attending but was included by the resident should have been left out by the resident. Keep your answers brief and to the point. The reports are:
+DEFAULT_PROMPT = """Succinctly organize the changes made by the attending to the resident's radiology reports into: 
+1) missed major findings (findings discussed by the attending but not by the resident that also fit under these categories: retained sponge or other clinically significant foreign body, mass or tumor, malpositioned line or tube of immediate clinical concern, life-threatening hemorrhage or vascular disruption, necrotizing fasciitis, free air or active leakage from the GI tract, ectopic pregnancy, intestinal ischemia or portomesenteric gas, ovarian torsion, testicular torsion, placental abruption, absent perfusion in a postoperative transplant, renal collecting system obstruction with signs of infection, acute cholecystitis, intracranial hemorrhage, midline shift, brain herniation, cerebral infarction or abscess or meningoencephalitis, airway compromise, abscess or discitis, hemorrhage, cord compression or unstable spine fracture or transection, acute cord hemorrhage or infarct, pneumothorax, large pericardial effusion, findings suggestive of active TB, impending pathologic fracture, acute fracture, absent perfusion in a postoperative kidney, brain death, high probability ventilation/perfusion (VQ) lung scan, arterial dissection or occlusion, acute thrombotic or embolic event including DVT and pulmonary thromboembolism, and aneurysm or vascular disruption), 
+2) missed minor findings (this includes all other pathologies not in the above list that were discussed by the attending but not by the resident), and 
+3) clarified descriptions of findings (this includes findings removed by the attending, findings re-worded by the attending, etc). 
+Assume the attending's version was correct, and anything not included by the attending but was included by the resident should have been left out by the resident. Keep your answers brief and to the point. The reports are: 
 Please output your response as structured JSON, with the following keys:
-- "case_number": The case number sent in the request (as a string).
+- "case_number": The case number sent in the request.
 - "major_findings": A list of any major findings missed by the resident (as described above).
 - "minor_findings": A list of minor findings discussed by the attending but not by the resident (as described above).
 - "clarifications": A list of any clarifications the attending made (as described above).
 - "score": The calculated score, where each major finding is worth 3 points and each minor finding is worth 1 point.
-Respond ONLY in this JSON format, with no other additional text, explanations, or pleasantries:
+Respond in this JSON format, with no other additional text or pleasantries:
 {
-  "case_number": "<case_number>",
-  "major_findings": ["<major_finding_1>", "<major_finding_2>", ...],
-  "minor_findings": ["<minor_finding_1>", "<minor_finding_2>", ...],
-  "clarifications": ["<clarification_1>", "<clarification_2>", ...],
+  "case_number": <case_number>,
+  "major_findings": [<major_findings>],
+  "minor_findings": [<minor_findings>],
+  "clarifications": [<clarifications>],
   "score": <score>
 }
 """
 
-# Default model constant
-DEFAULT_MODEL = "gpt-4o-mini" # As requested
-
-# --- Text Processing Functions ---
-
+# Normalize text: trim spaces but keep returns (newlines) intact
 def normalize_text(text):
-    """Trim spaces but keep returns (newlines) intact."""
     return "\n".join([line.strip() for line in text.splitlines() if line.strip()])
 
+# Remove "attending review" lines for comparison purposes
 def remove_attending_review_line(text):
-    """Remove standard attending review sign-off lines."""
     excluded_lines = [
         "As the attending physician, I have personally reviewed the images, interpreted and/or supervised the study or procedure, and agree with the wording of the above report.",
-        "As the Attending radiologist, I have personally reviewed the images, interpreted the study, and agree with the wording of the above report by Sterling M. Jones",
-        # Add any other variations of the sign-off line here
+        "As the Attending radiologist, I have personally reviewed the images, interpreted the study, and agree with the wording of the above report by Sterling M. Jones"
     ]
-    # Case-insensitive and whitespace-flexible comparison
-    return "\n".join([line for line in text.splitlines() if line.strip().lower() not in [ex.lower() for ex in excluded_lines]])
+    return "\n".join([line for line in text.splitlines() if line.strip() not in excluded_lines])
 
+# Calculate percentage change between two reports
 def calculate_change_percentage(resident_text, attending_text):
-    """Calculate percentage change between two reports based on word sequences."""
-    # Ensure inputs are strings, handle None gracefully
-    res_text = resident_text or ""
-    att_text = attending_text or ""
-    matcher = difflib.SequenceMatcher(None, res_text.split(), att_text.split())
+    matcher = difflib.SequenceMatcher(None, resident_text.split(), attending_text.split())
     return round((1 - matcher.ratio()) * 100, 2)
 
+# Compare reports section by section
 def split_into_paragraphs(text):
-    """Split text into paragraphs based on significant line breaks."""
-    # Split on one or more blank lines (more robust than just double newlines)
-    paragraphs = re.split(r'\n\s*\n+', text)
+    # Split the text into paragraphs based on double line breaks or single line breaks after punctuation
+    paragraphs = re.split(r'\n{2,}|\n(?=\w)', text)
     return [para.strip() for para in paragraphs if para.strip()]
 
 def create_diff_by_section(resident_text, attending_text):
-    """Compare reports section by section (paragraph level first, then word level)."""
     # Normalize text for comparison
-    norm_resident_text = normalize_text(resident_text or "") # Handle None
-    # Remove sign-off before normalizing for diffing
-    norm_attending_text = normalize_text(remove_attending_review_line(attending_text or "")) # Handle None
+    resident_text = normalize_text(resident_text)
+    attending_text = normalize_text(remove_attending_review_line(attending_text))
 
-    resident_paragraphs = split_into_paragraphs(norm_resident_text)
-    attending_paragraphs = split_into_paragraphs(norm_attending_text)
+    # Split text into paragraphs instead of sentences
+    resident_paragraphs = split_into_paragraphs(resident_text)
+    attending_paragraphs = split_into_paragraphs(attending_text)
 
     diff_html = ""
-    matcher = difflib.SequenceMatcher(None, resident_paragraphs, attending_paragraphs)
 
+    # Use SequenceMatcher on the paragraph level first
+    matcher = difflib.SequenceMatcher(None, resident_paragraphs, attending_paragraphs)
     for opcode, a1, a2, b1, b2 in matcher.get_opcodes():
+        # Handle matched (equal) paragraphs
         if opcode == 'equal':
             for paragraph in resident_paragraphs[a1:a2]:
-                diff_html += paragraph.replace('\n', '<br>') + "<br><br>" # Preserve line breaks within paragraphs
+                diff_html += paragraph + "<br><br>"
+
+        # Handle inserted paragraphs as a block
         elif opcode == 'insert':
             for paragraph in attending_paragraphs[b1:b2]:
-                diff_html += f'<div style="color:lightgreen; background-color: #284028; padding: 5px; border-radius: 4px;">[Inserted Paragraph:]<br>{paragraph.replace("\n", "<br>")}</div><br><br>'
+                diff_html += f'<div style="color:lightgreen;">[Inserted: {paragraph}]</div><br><br>'
+
+        # Handle deleted paragraphs as a block
         elif opcode == 'delete':
             for paragraph in resident_paragraphs[a1:a2]:
-                diff_html += f'<div style="color:#ff6b6b; background-color: #4a2a2a; text-decoration:line-through; padding: 5px; border-radius: 4px;">[Deleted Paragraph:]<br>{paragraph.replace("\n", "<br>")}</div><br><br>'
+                diff_html += f'<div style="color:#ff6b6b;text-decoration:line-through;">[Deleted: {paragraph}]</div><br><br>'
+
+        # Handle paragraph replacements by word-by-word comparison within each paragraph
         elif opcode == 'replace':
-            # More robust handling for unequal number of paragraphs in replace block
-            max_len = max(a2 - a1, b2 - b1)
-            res_pars = resident_paragraphs[a1:a2]
-            att_pars = attending_paragraphs[b1:b2]
-
-            for i in range(max_len):
-                res_paragraph = res_pars[i] if i < len(res_pars) else ""
-                att_paragraph = att_pars[i] if i < len(att_pars) else ""
-
-                if not res_paragraph: # Only insertion happened at the end of the block
-                     diff_html += f'<div style="color:lightgreen; background-color: #284028; padding: 5px; border-radius: 4px;">[Inserted Paragraph:]<br>{att_paragraph.replace("\n", "<br>")}</div><br><br>'
-                     continue
-                if not att_paragraph: # Only deletion happened at the end of the block
-                     diff_html += f'<div style="color:#ff6b6b; background-color: #4a2a2a; text-decoration:line-through; padding: 5px; border-radius: 4px;">[Deleted Paragraph:]<br>{res_paragraph.replace("\n", "<br>")}</div><br><br>'
-                     continue
-
-                # Both paragraphs exist, perform word-level diff
-                paragraph_diff_html = ""
-                # Ensure paragraphs are strings before splitting
-                res_words = res_paragraph.split() if res_paragraph else []
-                att_words = att_paragraph.split() if att_paragraph else []
-                word_matcher = difflib.SequenceMatcher(None, res_words, att_words)
-
+            res_paragraphs = resident_paragraphs[a1:a2]
+            att_paragraphs = attending_paragraphs[b1:b2]
+            for res_paragraph, att_paragraph in zip(res_paragraphs, att_paragraphs):
+                # Compare the words within the mismatched paragraphs
+                word_matcher = difflib.SequenceMatcher(None, res_paragraph.split(), att_paragraph.split())
                 for word_opcode, w_a1, w_a2, w_b1, w_b2 in word_matcher.get_opcodes():
                     if word_opcode == 'equal':
-                        paragraph_diff_html += " ".join(res_words[w_a1:w_a2]) + " "
+                        diff_html += " ".join(res_paragraph.split()[w_a1:w_a2]) + " "
                     elif word_opcode == 'replace':
-                        paragraph_diff_html += (
-                            '<span style="color:#ff6b6b; background-color: #4a2a2a; text-decoration:line-through;">' +
-                            " ".join(res_words[w_a1:w_a2]) +
-                            '</span> <span style="color:lightgreen; background-color: #284028;">' +
-                            " ".join(att_words[w_b1:w_b2]) +
+                        diff_html += (
+                            '<span style="color:#ff6b6b;text-decoration:line-through;">' +
+                            " ".join(res_paragraph.split()[w_a1:w_a2]) +
+                            '</span> <span style="color:lightgreen;">' +
+                            " ".join(att_paragraph.split()[w_b1:w_b2]) +
                             '</span> '
                         )
                     elif word_opcode == 'delete':
-                         paragraph_diff_html += (
-                            '<span style="color:#ff6b6b; background-color: #4a2a2a; text-decoration:line-through;">' +
-                            " ".join(res_words[w_a1:w_a2]) +
+                        diff_html += (
+                            '<span style="color:#ff6b6b;text-decoration:line-through;">' +
+                            " ".join(res_paragraph.split()[w_a1:w_a2]) +
                             '</span> '
                         )
                     elif word_opcode == 'insert':
-                         paragraph_diff_html += (
-                            '<span style="color:lightgreen; background-color: #284028;">' +
-                            " ".join(att_words[w_b1:w_b2]) +
+                        diff_html += (
+                            '<span style="color:lightgreen;">' +
+                            " ".join(att_paragraph.split()[w_b1:w_b2]) +
                             '</span> '
                         )
 
-                # Add the diff for this paragraph pair, preserving internal line breaks
-                diff_html += paragraph_diff_html.replace('\n', '<br>') + "<br><br>"
+                diff_html += "<br><br>"  # Separate each replaced paragraph with line breaks
 
     return diff_html
 
-
-# --- OpenAI Interaction Functions ---
-
-def get_summary(case_text, custom_prompt, case_number, model): # Accepts model
-    """Get a structured JSON summary of report differences using the specified model."""
-    if not client:
-        logger.error(f"OpenAI client not initialized. Cannot process case {case_number}.")
-        return {"case_number": case_number, "error": "OpenAI client not initialized."}
-
+# AI function to get a structured JSON summary of report differences
+def get_summary(case_text, custom_prompt, case_number):
     try:
-        logger.info(f"Processing case {case_number} with model {model}") # Logs the model used
+        logger.info(f"Processing case {case_number}")
         response = client.chat.completions.create(
-            model=model, # Use the passed-in model
+            model="gpt-4.1",
             messages=[
-                {"role": "system", "content": "You are a helpful assistant that outputs structured JSON summaries of radiology report differences, following the requested format exactly."},
+                {"role": "system", "content": "You are a helpful assistant that outputs structured JSON summaries of radiology report differences."},
                 {"role": "user", "content": f"{custom_prompt}\nCase Number: {case_number}\n{case_text}"}
             ],
             max_tokens=2000,
-            temperature=0.5,
-            response_format={ "type": "json_object" } # Enforce JSON output if model supports it
+            temperature=0.5
         )
         response_content = response.choices[0].message.content
-        logger.debug(f"Raw response for case {case_number} from model {model}: {response_content}")
-
-        # Attempt to parse the JSON
-        parsed_json = json.loads(response_content)
-
-        # Basic validation of the parsed JSON structure
-        if not isinstance(parsed_json, dict):
-             raise json.JSONDecodeError("Response is not a JSON object.", response_content, 0)
-        if "case_number" not in parsed_json:
-             logger.warning(f"AI response for case {case_number} missing 'case_number'. Adding it back.")
-             parsed_json["case_number"] = case_number # Ensure case_number is present
-        else:
-             # Ensure case_number from AI matches request, log if different
-             ai_case_num = str(parsed_json.get("case_number"))
-             if ai_case_num != case_number:
-                 logger.warning(f"Case number mismatch for request {case_number}. AI returned {ai_case_num}. Using requested number.")
-                 parsed_json["case_number"] = case_number # Standardize to requested number
-
-        # Ensure score calculation if 'score' key is missing or invalid
-        if 'score' not in parsed_json or not isinstance(parsed_json.get('score'), (int, float)):
-            major = len(parsed_json.get('major_findings', []))
-            minor = len(parsed_json.get('minor_findings', []))
-            parsed_json['score'] = (major * 3) + minor
-            logger.info(f"Calculated score for case {case_number} as {parsed_json['score']} (Major: {major}, Minor: {minor}).")
-
-        logger.info(f"Successfully parsed summary for case {case_number} using model {model}.")
-        return parsed_json
-
+        logger.info(f"Received response for case {case_number}: {response_content}")
+        return json.loads(response_content)
     except json.JSONDecodeError as jde:
-        logger.error(f"JSON decode error for case {case_number} on model {model}: {jde}. Response: {response_content}")
-        # Try to extract useful info even from broken JSON if possible, or return error
-        return {"case_number": case_number, "error": f"Invalid JSON response from AI: {jde}. Response was: {response_content}", "raw_response": response_content}
+        logger.error(f"JSON decode error for case {case_number}: {jde}")
+        return {"case_number": case_number, "error": "Invalid JSON response from AI."}
     except Exception as e:
-        # Catch potential API errors or other issues
-        logger.error(f"Error processing case {case_number} with model {model}: {e}") # Logs the model used
-        # Check if the error is specific (e.g., API connection error, rate limit)
-        error_message = f"Error processing case {case_number}: {type(e).__name__} - {e}"
-        # Log the full traceback for detailed debugging if needed
-        # logger.exception(f"Full traceback for error on case {case_number}")
-        return {"case_number": case_number, "error": error_message}
+        logger.error(f"Error processing case {case_number}: {e}")
+        return {"case_number": case_number, "error": "Error processing AI"}
 
-def process_cases(cases_data, custom_prompt, model, max_workers=10): # Accepts model
-    """Process multiple cases concurrently using the specified model."""
+# Process cases for summaries with concurrency
+def process_cases(cases_data, custom_prompt, max_workers=100):
     structured_output = []
-    if not cases_data:
-        logger.warning("No cases data provided to process_cases.")
-        return []
-
-    # Reduce default max_workers to avoid overwhelming API limits unless specifically needed
-    logger.info(f"Starting concurrent processing for {len(cases_data)} cases with model {model} (max_workers={max_workers}).") # Logs the model used
-
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all summary tasks to the executor, passing the model
+        # Submit all summary tasks to the executor
         future_to_case = {
-            executor.submit(get_summary, case_text, custom_prompt, case_num, model): case_num # Passes model
+            executor.submit(get_summary, case_text, custom_prompt, case_num): case_num
             for case_text, case_num in cases_data
         }
-        logger.debug(f"Submitted {len(future_to_case)} tasks to ThreadPoolExecutor.")
+        logger.info(f"Submitted {len(cases_data)} cases for concurrent processing.")
 
-        # Process results as they complete
         for future in as_completed(future_to_case):
             case_num = future_to_case[future]
             try:
-                result_json = future.result()
-                if not result_json:
-                    # Handle cases where get_summary might return None or empty dict unexpectedly
-                    logger.error(f"Received empty result for case {case_num}. Creating error entry.")
-                    result_json = {"case_number": case_num, "error": "Received empty result from processing."}
-                elif 'error' in result_json:
-                     logger.warning(f"Processed case {case_num} resulted in an error: {result_json['error']}")
-                else:
-                     # Ensure score exists, calculate if needed (double-check)
-                     if 'score' not in result_json or not isinstance(result_json.get('score'), (int, float)):
-                        major = len(result_json.get('major_findings', []))
-                        minor = len(result_json.get('minor_findings', []))
-                        result_json['score'] = (major * 3) + minor
-                        logger.info(f"Re-calculated score for case {case_num} as {result_json['score']}.")
-                     logger.info(f"Successfully processed summary for case {case_num}. Score: {result_json.get('score', 'N/A')}")
-
-                # Ensure the case_number in the result is a string for consistency
-                result_json['case_number'] = str(result_json.get('case_number', case_num))
-                structured_output.append(result_json)
-
+                parsed_json = future.result() or {}
+                # Use AI's score if available
+                parsed_json['score'] = parsed_json.get('score', len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', [])))
+                logger.info(f"Processed summary for case {case_num}: Score {parsed_json['score']}")
             except Exception as e:
-                # Catch errors from future.result() itself (though get_summary should catch most)
-                logger.error(f"Critical error retrieving result for case {case_num}: {e}", exc_info=True)
-                structured_output.append({"case_number": str(case_num), "error": f"Failed to retrieve result: {e}"})
-
-    logger.info(f"Completed processing {len(structured_output)} summaries using model {model}.") # Logs the model used
-    # Sort results by case number numerically before returning for consistent order
-    structured_output.sort(key=lambda x: int(x.get('case_number', 0)))
+                logger.error(f"Error processing case {case_num}: {e}")
+                parsed_json = {"case_number": case_num, "error": "Error processing AI"}
+            structured_output.append(parsed_json)
+    logger.info(f"Completed processing {len(structured_output)} summaries.")
     return structured_output
 
-# --- Case Extraction and Orchestration ---
-
-def extract_cases(text, custom_prompt, model): # Accepts model
-    """Extract individual cases, generate diffs, and orchestrate AI summaries using the specified model."""
-    # Normalize line endings early
+# Extract cases and add AI summary tab
+def extract_cases(text, custom_prompt):
+    # Normalize line endings to Unix style
     text = text.replace('\r\n', '\n').replace('\r', '\n')
-    logger.debug("Normalized line endings for the entire input text.")
+    logger.debug("Normalized line endings.")
+    
+    # Split on 'Case <number>' at the start of a line
+    cases = re.split(r'(?m)^Case\s+(\d+)', text, flags=re.IGNORECASE)
+    logger.debug(f"SPLIT RESULT FOR CASES: {cases}")
+    
+    logger.info(f"Total elements after split: {len(cases)}")
+    for idx, element in enumerate(cases):
+        logger.debug(f"Element {idx}: {element[:100]}{'...' if len(element) > 100 else ''}")
+    
+    cases_data = []
+    parsed_cases = []
 
-    # Split on 'Case <number>' that must be at the start of a line, case-insensitive
-    parts = re.split(r'(?m)^(Case\s+\d+)', text, flags=re.IGNORECASE)
-    logger.debug(f"Text split into {len(parts)} parts by '^Case \\d+'.")
-
-    cases_data_for_processing = []
-    all_extracted_case_info = {} # Store raw reports mapped by case number
-
-    if parts[0].strip():
-        logger.warning(f"Ignoring text before the first 'Case' marker: {parts[0][:100]}...")
-
-    for i in range(1, len(parts), 2):
-        marker = parts[i].strip()
-        case_num_match = re.search(r'\d+', marker)
-        if not case_num_match:
-             logger.warning(f"Could not extract number from marker: {marker}. Skipping.")
-             continue
-        case_num = case_num_match.group(0)
-
-        case_content = parts[i + 1].strip() if (i + 1) < len(parts) else ""
-        logger.info(f"Processing content associated with marker '{marker}' (Case Num: {case_num})")
-
-        report_parts = re.split(r'\s*(Attending\s+Report\s*:?|Resident\s+Report\s*:?)\s*', case_content, flags=re.IGNORECASE)
-
-        resident_report = ""
-        attending_report = ""
-        current_marker = None
-        for part in report_parts:
-             if not part or not part.strip(): continue # Skip empty/whitespace strings
-             part_lower_strip = part.strip().lower()
-
-             # Use startswith for more flexible matching (e.g., "Resident Report:")
-             if part_lower_strip.startswith("resident report"):
-                 current_marker = "resident"
-                 # Content might start immediately after the marker on the same line
-                 content_after_marker = part[len("Resident Report"):].lstrip(': \t\n\r')
-                 if content_after_marker:
-                     resident_report += content_after_marker.strip() + "\n"
-                 logger.debug(f"Case {case_num}: Found Resident marker.")
-             elif part_lower_strip.startswith("attending report"):
-                 current_marker = "attending"
-                 content_after_marker = part[len("Attending Report"):].lstrip(': \t\n\r')
-                 if content_after_marker:
-                     attending_report += content_after_marker.strip() + "\n"
-                 logger.debug(f"Case {case_num}: Found Attending marker.")
-             elif current_marker == "resident":
-                 resident_report += part.strip() + "\n"
-             elif current_marker == "attending":
-                 attending_report += part.strip() + "\n"
-
-        resident_report = resident_report.strip()
-        attending_report = attending_report.strip()
-
-        if resident_report and attending_report:
-            logger.info(f"Successfully extracted Resident and Attending reports for Case {case_num}.")
-            case_text_for_ai = f"Resident Report:\n{resident_report}\n\nAttending Report:\n{attending_report}"
-            cases_data_for_processing.append((case_text_for_ai, case_num))
-            all_extracted_case_info[case_num] = {
-                'resident_report': resident_report,
-                'attending_report': attending_report
-            }
+    # Extract all cases and prepare data for concurrent processing
+    for i in range(1, len(cases), 2):
+        case_num = cases[i]
+        case_content = cases[i + 1].strip() if i + 1 < len(cases) else ""
+        logger.debug(f"Processing Case {case_num}:")
+        logger.debug(f"Case Content: {case_content[:200]}{'...' if len(case_content) > 200 else ''}")
+        
+        reports = re.split(r'\s*(Attending\s+Report\s*:|Resident\s+Report\s*:)\s*', case_content, flags=re.IGNORECASE)
+        logger.debug(f"Reports split: {reports}")
+        
+        if len(reports) >= 3:
+            attending_report = reports[2].strip()
+            resident_report = reports[4].strip() if len(reports) > 4 else ""
+            case_text = f"Resident Report: {resident_report}\nAttending Report: {attending_report}"
+            cases_data.append((case_text, case_num))
+            logger.info(f"Prepared case {case_num} for processing.")
         else:
-            logger.warning(f"Case {case_num}: Could not find both Resident and Attending reports. Resident found: {bool(resident_report)}, Attending found: {bool(attending_report)}.")
-            all_extracted_case_info[case_num] = {
-                 'resident_report': resident_report or "[Not Found]",
-                 'attending_report': attending_report or "[Not Found]",
-                 'error': 'Missing one or both reports.'
-            }
+            logger.warning(f"Case {case_num} does not contain both Attending and Resident Reports.")
 
+    if not cases_data:
+        logger.warning("No valid cases found in the submitted text.")
+        return parsed_cases
 
-    if not cases_data_for_processing:
-        logger.warning("No valid cases with both reports found to send for AI processing.")
-        parsed_cases_results = []
-        for case_num, info in all_extracted_case_info.items():
-             parsed_cases_results.append({
-                'case_num': case_num,
-                'resident_report': info['resident_report'],
-                'attending_report': info['attending_report'],
-                'percentage_change': 0,
-                'diff': '<p class="error-message">Error: Could not extract both reports.</p>',
-                'summary': {'case_number': case_num, 'error': info.get('error', 'Extraction failed.')}
-            })
-        return parsed_cases_results
+    # Process all summaries concurrently
+    ai_summaries = process_cases(cases_data, custom_prompt, max_workers=20)
 
-
-    # Process all valid cases concurrently using the selected model
-    logger.info(f"Sending {len(cases_data_for_processing)} cases for AI summary processing using model: {model}") # Logs model
-    # Pass the selected model down
-    ai_summaries = process_cases(cases_data_for_processing, custom_prompt, model, max_workers=10) # Passes model parameter
-
-
-    # Combine AI summaries with original reports and diffs
-    parsed_cases_results = []
-    ai_summary_map = {str(summary.get('case_number')): summary for summary in ai_summaries if summary.get('case_number')}
-
-    for case_num, info in all_extracted_case_info.items():
-         case_num_str = str(case_num)
-
-         if 'error' in info:
-             parsed_cases_results.append({
-                'case_num': case_num_str,
-                'resident_report': info['resident_report'],
-                'attending_report': info['attending_report'],
-                'percentage_change': 0,
-                'diff': '<p class="error-message">Error: Could not extract both reports.</p>',
-                'summary': {'case_number': case_num_str, 'error': info.get('error', 'Extraction failed.')}
-             })
-             continue
-
-
-         resident_report = info['resident_report']
-         attending_report = info['attending_report']
-
-         # Calculate diff and percentage change
-         attending_for_calc = remove_attending_review_line(attending_report)
-         percentage_change = calculate_change_percentage(resident_report, attending_for_calc)
-         diff_html = create_diff_by_section(resident_report, attending_report)
-
-         ai_summary = ai_summary_map.get(case_num_str)
-
-         if ai_summary and 'error' not in ai_summary:
-             logger.info(f"Successfully combined data for case {case_num_str}.")
-             parsed_cases_results.append({
-                'case_num': case_num_str,
+    # Map each summary to its corresponding case
+    for ai_summary in ai_summaries:
+        case_num = ai_summary.get('case_number')
+        if not case_num:
+            logger.warning("Summary missing 'case_number'. Skipping.")
+            continue  # Skip if case_num is missing
+        
+        # **Convert case_num to string for accurate comparison**
+        case_num = str(case_num)
+        
+        # Find the corresponding case content
+        case_content = next((ct for ct, num in cases_data if num == case_num), "")
+        if case_content:
+            try:
+                resident_report = case_content.split("\nAttending Report:")[0].replace("Resident Report: ", "").strip()
+                attending_report = case_content.split("\nAttending Report:")[1].strip()
+            except IndexError:
+                logger.error(f"Error parsing reports for case {case_num}.")
+                continue
+            parsed_cases.append({
+                'case_num': case_num,  # Already a string
                 'resident_report': resident_report,
                 'attending_report': attending_report,
-                'percentage_change': percentage_change,
-                'diff': diff_html,
-                'summary': ai_summary
-             })
-         else:
-             error_message = "AI summary processing failed."
-             if ai_summary and 'error' in ai_summary:
-                 error_message = f"AI Error: {ai_summary['error']}"
-             elif not ai_summary:
-                  error_message = "AI summary not found for this case."
-
-             logger.warning(f"Case {case_num_str}: Combining failed. {error_message}")
-             parsed_cases_results.append({
-                 'case_num': case_num_str,
-                 'resident_report': resident_report,
-                 'attending_report': attending_report,
-                 'percentage_change': percentage_change,
-                 'diff': diff_html,
-                 'summary': {'case_number': case_num_str, 'error': error_message, 'score': 0}
-             })
-
-    logger.info(f"Finished extracting and processing. Returning {len(parsed_cases_results)} case results.")
-    parsed_cases_results.sort(key=lambda x: int(x.get('case_num', 0)))
-    return parsed_cases_results
-
-
-# --- Flask Routes ---
+                'percentage_change': calculate_change_percentage(resident_report, remove_attending_review_line(attending_report)),
+                'diff': create_diff_by_section(resident_report, attending_report),
+                'summary': ai_summary if 'error' not in ai_summary else None
+            })
+            logger.info(f"Assigned summary to case {case_num}.")
+    logger.info(f"Total parsed_cases to return: {len(parsed_cases)}")
+    logger.debug(f"Parsed_cases: {json.dumps(parsed_cases, indent=2)}")
+    return parsed_cases
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
     custom_prompt = request.form.get('custom_prompt', DEFAULT_PROMPT)
-    # Get the selected model from the form, falling back to the default
-    selected_model = request.form.get('model', DEFAULT_MODEL) # Reads model from form
     case_data = []
-    report_text_input = ""
 
     if request.method == 'POST':
-        report_text_input = request.form.get('report_text', '')
-        if not report_text_input.strip():
-            logger.warning("Form submitted but no report text was provided.")
+        text_block = request.form['report_text']
+        if not text_block.strip():
+            logger.warning("No report text provided.")
         else:
-            logger.info(f"Starting case extraction and processing using model: {selected_model}.") # Logs model
-            # Pass the selected model to extract_cases
-            case_data = extract_cases(report_text_input, custom_prompt, selected_model) # Passes model
-            logger.info(f"Completed case extraction and processing. Found {len(case_data)} cases.")
+            logger.info("Starting case extraction and processing.")
+            case_data = extract_cases(text_block, custom_prompt)
+            logger.info(f"Completed case extraction and processing. Number of cases extracted: {len(case_data)}")
+            logger.debug(f"Extracted case_data: {json.dumps(case_data, indent=2)}")  # Detailed debug log
 
-    logger.info(f"Rendering template with {len(case_data)} cases. Selected model: {selected_model}.") # Logs model
+    # Log the case_data before passing to the template
+    logger.info(f"Passing {len(case_data)} cases to the template.")
+    logger.debug(f"case_data being passed: {json.dumps(case_data, indent=2)}")  # Detailed debug log
 
-    # --- HTML Template String ---
     template = """
-<!DOCTYPE html>
 <html>
     <head>
         <title>Radiology Report Diff & Summarizer</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
+        <!-- Added dotlottie-player script -->
         <script src="https://unpkg.com/@dotlottie/player-component@2.7.12/dist/dotlottie-player.mjs" type="module"></script>
         <style>
             body { background-color: #1e1e1e; color: #dcdcdc; font-family: Arial, sans-serif; }
-            .container { max-width: 1200px; }
-            textarea, input, button, select { background-color: #333333; color: #dcdcdc; border: 1px solid #555; }
-            textarea.form-control, select.form-control { background-color: #333333 !important; color: #dcdcdc !important; border: 1px solid #555 !important; }
-            textarea:focus, select:focus { background-color: #444 !important; color: #eeeeee !important; border-color: #777; box-shadow: none; }
-            h2, h3, h4 { color: #f0f0f0; font-weight: normal; margin-top: 1.5rem; }
-            .diff-output, .summary-output { margin-top: 15px; padding: 15px; background-color: #2e2e2e; border-radius: 8px; border: 1px solid #555; font-size: 0.9rem; }
-            pre { white-space: pre-wrap; word-wrap: break-word; font-family: Consolas, 'Courier New', monospace; font-size: 0.85rem; }
-            .nav-tabs { border-bottom: 1px solid #555; }
-            .nav-tabs .nav-link { background-color: #333; border: 1px solid #555; border-bottom-color: transparent; color: #dcdcdc; margin-right: 2px; }
-            .nav-tabs .nav-link.active { background-color: #007bff; border-color: #007bff #007bff #2e2e2e; color: white; }
-            .nav-tabs .nav-link:hover { border-color: #666; background-color: #444; }
-            .tab-content { border: 1px solid #555; border-top: none; padding: 15px; background-color: #2e2e2e; border-radius: 0 0 8px 8px; }
+            textarea, input, button { background-color: #333333; color: #dcdcdc; border: 1px solid #555; }
+            textarea { background-color: #333333 !important; color: #dcdcdc !important; border: 1px solid #555 !important; }
+            h2, h3, h4 { color: #f0f0f0; font-weight: normal; }
+            .diff-output, .summary-output { margin-top: 20px; padding: 15px; background-color: #2e2e2e; border-radius: 8px; border: 1px solid #555; }
+            pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; }
+            .nav-tabs .nav-link { background-color: #333; border-color: #555; color: #dcdcdc; }
+            .nav-tabs .nav-link.active { background-color: #007bff; border-color: #007bff #007bff #333; color: white; }
+
+            /* Scroll-to-top button */
             #scrollToTopBtn {
-                position: fixed; right: 20px; bottom: 20px; background-color: #007bff; color: white;
-                padding: 10px 15px; border-radius: 50%; border: none; cursor: pointer; z-index: 1000;
-                opacity: 0.8; transition: opacity 0.3s; font-size: 1.2rem; box-shadow: 0 2px 5px rgba(0,0,0,0.3); display: none; /* Hidden initially */
+                    position: fixed;
+                    right: 20px;
+                    bottom: 20px;
+                    background-color: #007bff;
+                    color: white;
+                    padding: 10px 15px;
+                    border-radius: 15px;
+                    border: none;
+                    cursor: pointer;
+                    z-index: 1000;
             }
-            #scrollToTopBtn:hover { opacity: 1; background-color: #0056b3; }
-            a { color: #66ccff; text-decoration: none; }
-            a:hover { color: #99e6ff; text-decoration: underline; }
-            #loadingAnimationContainer { display: none; text-align: center; margin-top: 20px; }
-            #loadingMessage { font-size: 1.1rem; color: #aaa; margin-top: -20px;}
-            ul { padding-left: 20px; }
-            li { margin-bottom: 5px; }
-            .summary-output p strong { color: #87cefa; }
-            .summary-output ul { margin-top: 5px; margin-bottom: 15px; }
-            span[style*="color:#ff6b6b"] { background-color: #502020; padding: 1px 3px; border-radius: 3px; }
-            span[style*="color:lightgreen"] { background-color: #205020; padding: 1px 3px; border-radius: 3px; }
-            div[style*="color:#ff6b6b"] { background-color: #502020; border-left: 3px solid #ff6b6b; padding: 10px; margin-bottom: 10px; }
-            div[style*="color:lightgreen"] { background-color: #205020; border-left: 3px solid lightgreen; padding: 10px; margin-bottom: 10px; }
-            .btn-group .btn { margin-right: 5px;}
-            .error-message { color: #ff6b6b; font-weight: bold; background-color: #4a2a2a; padding: 10px; border-radius: 5px; border: 1px solid #ff6b6b; margin-top: 10px;}
+            #scrollToTopBtn:hover {
+                    background-color: #0056b3;
+            }
+
+            /* Links styling for night mode */
+            a {
+                    color: #66ccff; /* A softer blue that is easier on the eyes in night mode */
+                    text-decoration: none; /* Removes underline */
+            }
+            a:hover {
+                    color: #99e6ff; /* A lighter blue for hover state */
+                    text-decoration: none; /* Ensures no underline on hover */
+            }
+
+            /* Loading animation styling */
+            #loadingAnimation {
+                display: none; /* Hidden by default */
+                margin-top: 20px;
+            }
         </style>
+
     </head>
     <body>
-        <div class="container mt-4">
-            <h2>Radiology Report Diff & Summarizer</h2>
+        <div class="container">
+            <h2 class="mt-4">Compare Revisions & Summarize Reports</h2>
             <form method="POST" id="reportForm">
-                <div class="mb-3">
-                    <label for="report_text" class="form-label">Paste your reports block here (ensure format 'Case NUMBER', 'Resident Report:', 'Attending Report:'):</label>
-                    <textarea id="report_text" name="report_text" class="form-control" rows="12" required>{{ report_text_input }}</textarea>
-                </div>
-
-                <!-- Model Selection Dropdown - CORRECTED AS PER INSTRUCTIONS -->
                 <div class="form-group mb-3">
-                  <label for="model_select">Choose OpenAI Model:</label>
-                  <select id="model_select" name="model" class="form-control">
-                    <option value="gpt-4o-mini" {{ 'selected' if chosen_model=='gpt-4o-mini' else '' }}>gpt-4o-mini</option>
-                    <option value="gpt-4o" {{ 'selected' if chosen_model=='gpt-4o' else '' }}>gpt-4o</option>
-                    <option value="gpt-4o-mini-tts" {{ 'selected' if chosen_model=='gpt-4o-mini-tts' else '' }}>gpt-4o-mini-tts</option>
-                    <option value="gpt-4o-tts" {{ 'selected' if chosen_model=='gpt-4o-tts' else '' }}>gpt-4o-tts</option>
-                    <option value="gpt-4.1" {{ 'selected' if chosen_model=='gpt-4.1' else '' }}>gpt-4.1</option> {# Note: gpt-4.1 might not be a standard public model name, adjust if needed #}
-                    <option value="gpt-4.1-turbo" {{ 'selected' if chosen_model=='gpt-4.1-turbo' else '' }}>gpt-4.1-turbo</option> {# Note: gpt-4.1-turbo might not be a standard public model name, adjust if needed #}
-                    <option value="gpt-4-turbo" {{ 'selected' if chosen_model=='gpt-4-turbo' else '' }}>gpt-4-turbo</option> {# Added common alternative #}
-                    <!-- Add any other variants you need -->
-                  </select>
+                    <label for="report_text">Paste your reports block here:</label>
+                    <textarea id="report_text" name="report_text" class="form-control" rows="10">{{ request.form.get('report_text', '') }}</textarea>
                 </div>
-
-                <div class="mb-3">
-                    <label for="custom_prompt" class="form-label">Customize OpenAI Prompt (Edit with care):</label>
-                    <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="6">{{ custom_prompt }}</textarea>
+                <div class="form-group mb-3">
+                    <label for="custom_prompt">Customize your OpenAI API prompt:</label>
+                    <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="5">{{ custom_prompt }}</textarea>
                 </div>
-
                 <button type="submit" class="btn btn-primary">Compare & Summarize Reports</button>
-
-                <!-- Loading Animation Container -->
-                <div id="loadingAnimationContainer">
-                    <dotlottie-player id="loadingAnimation" src="https://lottie.host/817661a8-2608-4435-89a5-daa620a64c36/WtsFI5zdEK.lottie" background="transparent" speed="1" style="width: 200px; height: 200px; margin: auto;" loop autoplay></dotlottie-player>
-                    <p id="loadingMessage">Processing reports...</p>
-                </div>
+                <!-- Added dotlottie-player for loading animation -->
+                <dotlottie-player id="loadingAnimation" src="https://lottie.host/817661a8-2608-4435-89a5-daa620a64c36/WtsFI5zdEK.lottie" background="transparent" speed="1" style="width: 300px; height: 300px;" loop autoplay></dotlottie-player>
             </form>
-
-            {% if case_data is defined and case_data %}
-                <hr style="border-color: #555; margin-top: 2rem; margin-bottom: 2rem;">
-                <h3 id="resultsSummary">Results Summary</h3>
-
-                <!-- Aggregated Findings -->
-                <div class="row">
-                    <div class="col-md-6">
-                        <h4 id="majorFindings">Major Findings Missed (Aggregated)</h4>
-                        <ul>
-                            {% set found_major = [] %}
-                            {% for case in case_data %}
-                                {% if case.summary and case.summary.major_findings %}
-                                    {% for finding in case.summary.major_findings %}
-                                        <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
-                                        {% set _ = found_major.append(1) %}
-                                    {% endfor %}
-                                {% endif %}
+            {% if case_data %}
+                <h3 id="majorFindings">Major Findings Missed</h3>
+                <ul>
+                    {% for case in case_data %}
+                        {% if case.summary and case.summary.major_findings %}
+                            {% for finding in case.summary.major_findings %}
+                                <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
                             {% endfor %}
-                            {% if not found_major %}<li>None</li>{% endif %}
-                        </ul>
-                    </div>
-                    <div class="col-md-6">
-                        <h4>Minor Findings Missed (Aggregated)</h4>
-                        <ul>
-                            {% set found_minor = [] %}
-                            {% for case in case_data %}
-                                {% if case.summary and case.summary.minor_findings %}
-                                    {% for finding in case.summary.minor_findings %}
-                                        <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
-                                        {% set _ = found_minor.append(1) %}
-                                    {% endfor %}
-                                {% endif %}
+                        {% endif %}
+                    {% endfor %}
+                </ul>
+                <h3>Minor Findings Missed</h3>
+                <ul>
+                    {% for case in case_data %}
+                        {% if case.summary and case.summary.minor_findings %}
+                            {% for finding in case.summary.minor_findings %}
+                                <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
                             {% endfor %}
-                             {% if not found_minor %}<li>None</li>{% endif %}
-                        </ul>
-                    </div>
-                </div>
-
-
-                <h3>Case Details & Navigation</h3>
-                 <!-- Sort Options -->
-                <div class="btn-group mb-3" role="group" aria-label="Sort Options">
-                    <button type="button" class="btn btn-secondary btn-sm" onclick="sortCases('case_number')">Sort by Case Number</button>
-                    <button type="button" class="btn btn-secondary btn-sm" onclick="sortCases('percentage_change')">Sort by % Change</button>
-                    <button type="button" class="btn btn-secondary btn-sm" onclick="sortCases('summary_score')">Sort by Summary Score</button>
-                </div>
-
-                <!-- Case Navigation Links -->
-                <ul id="caseNavList" class="list-group list-group-flush mb-3"></ul>
-
-                 <!-- Container for Individual Case Details -->
-                <div id="caseContainer">
-                    <!-- Cases will be dynamically inserted here by JavaScript -->
-                </div>
-
-            {% elif request.method == 'POST' %}
-                 <div class="alert alert-warning mt-3" role="alert">
-                    No cases could be extracted. Please check the format of your input text. It should include lines starting with 'Case [Number]', 'Resident Report:', and 'Attending Report:'.
-                 </div>
+                        {% endif %}
+                    {% endfor %}
+                </ul>
+                <h3>Case Navigation</h3>
             {% endif %}
-
-        </div> <!-- /container -->
-
-        <!-- Scroll-to-top button -->
-        <button id="scrollToTopBtn" onclick="scrollToTop()" title="Scroll to top">⬆</button>
-
-        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+            <!-- Always include these elements to prevent JS errors -->
+            <div class="btn-group" role="group" aria-label="Sort Options">
+                <button type="button" class="btn btn-secondary" onclick="sortCases('case_number')">Sort by Case Number</button>
+                <button type="button" class="btn btn-secondary" onclick="sortCases('percentage_change')">Sort by Percentage Change</button>
+                <button type="button" class="btn btn-secondary" onclick="sortCases('summary_score')">Sort by Summary Score</button>
+            </div>
+            <ul id="caseNav"></ul>
+            <div id="caseContainer"></div>
+        </div>
+        <!-- Added scroll-to-top button -->
+        <button id="scrollToTopBtn" onclick="scrollToTop()">Top ⬆</button>
         <script>
-            let caseData = {{ case_data | default([]) | tojson }};
-            const initialCaseData = JSON.parse(JSON.stringify(caseData));
-
-            console.log("Initial caseData received from Flask:", caseData);
+            let caseData = {{ case_data | tojson }};
+            console.log("Received caseData:", caseData); // Debugging
 
             function sortCases(option) {
-                console.log("Sorting cases by:", option);
-                if (!Array.isArray(caseData)) {
-                    console.error("caseData is not an array, cannot sort.");
-                    return;
+                console.log("Sorting cases by:", option); // Debugging
+                if (option === "case_number") {
+                    caseData.sort((a, b) => parseInt(a.case_num) - parseInt(b.case_num));
+                } else if (option === "percentage_change") {
+                    caseData.sort((a, b) => b.percentage_change - a.percentage_change);
+                } else if (option === "summary_score") {
+                    caseData.sort((a, b) => (b.summary && b.summary.score || 0) - (a.summary && a.summary.score || 0));
                 }
-                let sortedData = [...caseData];
-                try {
-                     if (option === "case_number") {
-                        sortedData.sort((a, b) => parseInt(a.case_num || '0') - parseInt(b.case_num || '0'));
-                    } else if (option === "percentage_change") {
-                        sortedData.sort((a, b) => (b.percentage_change || 0) - (a.percentage_change || 0));
-                    } else if (option === "summary_score") {
-                        sortedData.sort((a, b) => {
-                            const scoreA = (a.summary && typeof a.summary.score === 'number') ? a.summary.score : -Infinity; // Sort errors/missing lowest
-                            const scoreB = (b.summary && typeof b.summary.score === 'number') ? b.summary.score : -Infinity;
-                            return scoreB - scoreA;
-                        });
-                    } else {
-                         console.warn("Unknown sort option:", option);
-                         return;
-                    }
-                    caseData = sortedData;
-                    console.log("Sorted caseData:", caseData);
-                    displayCases();
-                    displayNavigation();
-                } catch (error) {
-                     console.error("Error during sorting:", error);
-                }
+                console.log("Sorted caseData:", caseData); // Debugging
+                displayCases();
+                displayNavigation();
             }
 
             function displayNavigation() {
-                const navList = document.getElementById('caseNavList');
-                if (!navList) { console.error("Element with id 'caseNavList' not found."); return; }
-                navList.innerHTML = '';
-                if (!Array.isArray(caseData) || caseData.length === 0) {
-                    navList.innerHTML = '<li class="list-group-item" style="background-color: #2e2e2e; color: #aaa;">No cases to navigate.</li>';
+                const nav = document.getElementById('caseNav');
+                if (!nav) {
+                    console.error("Element with id 'caseNav' not found.");
+                    return; // Prevent errors if element not found
+                }
+                nav.innerHTML = '';
+                if (caseData.length === 0) {
+                    nav.innerHTML = '<li>No cases to display.</li>';
+                    console.log("No cases to display in navigation.");
                     return;
                 }
+                console.log("Displaying navigation for cases.");
                 caseData.forEach(caseObj => {
-                    const score = (caseObj.summary && typeof caseObj.summary.score === 'number') ? caseObj.summary.score : 'N/A';
-                    const percentage = typeof caseObj.percentage_change === 'number' ? `${caseObj.percentage_change}%` : 'N/A';
-                    const errorClass = (caseObj.summary && caseObj.summary.error) ? 'list-group-item-danger' : '';
-                    navList.innerHTML += `
-                        <li class="list-group-item ${errorClass}" style="background-color: #333; border-color: #555;">
-                            <a href="#case${caseObj.case_num}">Case ${caseObj.case_num}</a> - Change: ${percentage} - Score: ${score}
-                            ${(caseObj.summary && caseObj.summary.error) ? ' <small style="color: #ff6b6b;">(Error)</small>' : ''}
+                    nav.innerHTML += 
+                        <li>
+                            <a href="#case${caseObj.case_num}">Case ${caseObj.case_num}</a> - ${caseObj.percentage_change}% change - Score: ${(caseObj.summary && caseObj.summary.score) || 'N/A'}
                         </li>
-                    `;
+                    ;
                 });
+                console.log("Navigation populated.");
             }
 
             function displayCases() {
                 const container = document.getElementById('caseContainer');
-                if (!container) { console.error("Element with id 'caseContainer' not found."); return; }
+                if (!container) {
+                    console.error("Element with id 'caseContainer' not found.");
+                    return; // Prevent errors if element not found
+                }
                 container.innerHTML = '';
-                if (!Array.isArray(caseData) || caseData.length === 0) { return; }
-
-                caseData.forEach((caseObj, index) => {
-                    const caseNum = caseObj.case_num || `unknown_${index}`;
-                    const percentageChange = typeof caseObj.percentage_change === 'number' ? `${caseObj.percentage_change}% change` : 'Change N/A';
-                    const residentReport = caseObj.resident_report || "[Resident Report Not Available]";
-                    const attendingReport = caseObj.attending_report || "[Attending Report Not Available]";
-                    const diffContent = caseObj.diff || '<p class="error-message">Diff not available.</p>';
-                    const summary = caseObj.summary;
-
-                    let summaryHtml = '<div class="summary-output"><p class="error-message">Summary data is missing or invalid.</p></div>';
-                    if (summary) {
-                        if (summary.error) {
-                             summaryHtml = `<div class="summary-output"><p class="error-message"><strong>Error generating summary:</strong> ${summary.error}</p>${summary.raw_response ? `<hr><p><strong>Raw AI Response (may contain useful details):</strong></p><pre style="font-size: 0.75rem; color: #ccc; max-height: 150px; overflow-y: auto;">${summary.raw_response}</pre>` : ''}</div>`;
-                        } else {
-                             const score = typeof summary.score === 'number' ? summary.score : 'N/A';
-                             const majorFindingsHtml = (summary.major_findings && summary.major_findings.length > 0) ? `<p><strong>Major Findings:</strong></p><ul>${summary.major_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : '<p><strong>Major Findings:</strong> None</p>';
-                             const minorFindingsHtml = (summary.minor_findings && summary.minor_findings.length > 0) ? `<p><strong>Minor Findings:</strong></p><ul>${summary.minor_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : '<p><strong>Minor Findings:</strong> None</p>';
-                             const clarificationsHtml = (summary.clarifications && summary.clarifications.length > 0) ? `<p><strong>Clarifications:</strong></p><ul>${summary.clarifications.map(clarification => `<li>${clarification}</li>`).join('')}</ul>` : '<p><strong>Clarifications:</strong> None</p>';
-                             summaryHtml = `<div class="summary-output"><p><strong>Score:</strong> ${score}</p>${majorFindingsHtml}${minorFindingsHtml}${clarificationsHtml}</div>`;
-                        }
-                    }
-
-                    container.innerHTML += `
-                        <div id="case${caseNum}" class="case-entry mb-4">
-                            <h4 style="border-bottom: 1px solid #555; padding-bottom: 5px;">Case ${caseNum} - ${percentageChange}</h4>
-                            <ul class="nav nav-tabs" id="myTab${caseNum}" role="tablist">
-                                <li class="nav-item" role="presentation"><button class="nav-link active" id="summary-tab${caseNum}" data-bs-toggle="tab" data-bs-target="#summary${caseNum}" type="button" role="tab" aria-controls="summary${caseNum}" aria-selected="true">Summary Report</button></li>
-                                <li class="nav-item" role="presentation"><button class="nav-link" id="combined-tab${caseNum}" data-bs-toggle="tab" data-bs-target="#combined${caseNum}" type="button" role="tab" aria-controls="combined${caseNum}" aria-selected="false">Diff Report</button></li>
-                                <li class="nav-item" role="presentation"><button class="nav-link" id="resident-tab${caseNum}" data-bs-toggle="tab" data-bs-target="#resident${caseNum}" type="button" role="tab" aria-controls="resident${caseNum}" aria-selected="false">Resident Report</button></li>
-                                <li class="nav-item" role="presentation"><button class="nav-link" id="attending-tab${caseNum}" data-bs-toggle="tab" data-bs-target="#attending${caseNum}" type="button" role="tab" aria-controls="attending${caseNum}" aria-selected="false">Attending Report</button></li>
-                            </ul>
-                            <div class="tab-content" id="myTabContent${caseNum}">
-                                <div class="tab-pane fade show active" id="summary${caseNum}" role="tabpanel" aria-labelledby="summary-tab${caseNum}">${summaryHtml}</div>
-                                <div class="tab-pane fade" id="combined${caseNum}" role="tabpanel" aria-labelledby="combined-tab${caseNum}"><div class="diff-output">${diffContent}</div></div>
-                                <div class="tab-pane fade" id="resident${caseNum}" role="tabpanel" aria-labelledby="resident-tab${caseNum}"><div class="diff-output"><pre>${residentReport}</pre></div></div>
-                                <div class="tab-pane fade" id="attending${caseNum}" role="tabpanel" aria-labelledby="attending-tab${caseNum}"><div class="diff-output"><pre>${attendingReport}</pre></div></div>
+                if (caseData.length === 0) {
+                    container.innerHTML = '<p>No cases to display.</p>';
+                    console.log("No cases to display in container.");
+                    return;
+                }
+                console.log("Displaying cases.");
+                caseData.forEach(caseObj => {
+                    if (!caseObj.summary) {
+                        container.innerHTML += 
+                            <div id="case${caseObj.case_num}">
+                                <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
+                                <p style="color: red;"><strong>Error:</strong> Unable to generate summary for this case.</p>
+                                <hr>
                             </div>
+                        ;
+                        console.log(Displayed error for case ${caseObj.case_num}.);
+                        return;
+                    }
+                    container.innerHTML += 
+                        <div id="case${caseObj.case_num}">
+                            <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
+                            <ul class="nav nav-tabs" id="myTab${caseObj.case_num}" role="tablist">
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link active" id="summary-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#summary${caseObj.case_num}" type="button" role="tab">Summary Report</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="combined-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#combined${caseObj.case_num}" type="button" role="tab">Combined Report</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="resident-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#resident${caseObj.case_num}" type="button" role="tab">Resident Report</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="attending-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#attending${caseObj.case_num}" type="button" role="tab">Attending Report</button>
+                                </li>
+                            </ul>
+                            <div class="tab-content" id="myTabContent${caseObj.case_num}">
+                                <div class="tab-pane fade show active" id="summary${caseObj.case_num}" role="tabpanel">
+                                    <div class="summary-output">
+                                        <p><strong>Score:</strong> ${caseObj.summary.score || 'N/A'}</p>
+                                        ${caseObj.summary.major_findings && caseObj.summary.major_findings.length > 0 ? <p><strong>Major Findings:</strong></p><ul>${caseObj.summary.major_findings.map(finding => <li>${finding}</li>).join('')}</ul> : ''}
+                                        ${caseObj.summary.minor_findings && caseObj.summary.minor_findings.length > 0 ? <p><strong>Minor Findings:</strong></p><ul>${caseObj.summary.minor_findings.map(finding => <li>${finding}</li>).join('')}</ul> : ''}
+                                        ${caseObj.summary.clarifications && caseObj.summary.clarifications.length > 0 ? <p><strong>Clarifications:</strong></p><ul>${caseObj.summary.clarifications.map(clarification => <li>${clarification}</li>).join('')}</ul> : ''}
+                                    </div>
+                                </div>
+                                <div class="tab-pane fade" id="combined${caseObj.case_num}" role="tabpanel">
+                                    <div class="diff-output">${caseObj.diff}</div>
+                                </div>
+                                <div class="tab-pane fade" id="resident${caseObj.case_num}" role="tabpanel">
+                                    <div class="diff-output"><pre>${caseObj.resident_report}</pre></div>
+                                </div>
+                                <div class="tab-pane fade" id="attending${caseObj.case_num}" role="tabpanel">
+                                    <div class="diff-output"><pre>${caseObj.attending_report}</pre></div>
+                                </div>
+                            </div>
+                            <hr>
                         </div>
-                    `;
+                    ;
+                    console.log(Displayed case ${caseObj.case_num}.);
                 });
+                console.log("All cases displayed.");
             }
 
             document.addEventListener("DOMContentLoaded", () => {
-                console.log("DOM fully loaded.");
                 if (caseData && caseData.length > 0) {
-                    console.log("Case data exists on load. Rendering initial view sorted by case number.");
-                    sortCases('case_number'); // Initial sort and display
+                    console.log("Case data available. Rendering cases and navigation.");
+                    displayCases();
+                    displayNavigation();
                 } else {
-                    console.log("No case data available on initial load.");
-                     displayNavigation(); // Display empty state
-                     displayCases();
+                    console.log("No case data available to display.");
                 }
-
-                const reportForm = document.getElementById('reportForm');
-                const loadingContainer = document.getElementById('loadingAnimationContainer');
-                if(reportForm && loadingContainer) {
-                    reportForm.addEventListener('submit', function(event) {
-                        const reportText = document.getElementById('report_text').value;
-                        if (!reportText.trim()) {
-                           alert("Please paste report text before submitting.");
-                           event.preventDefault();
-                           return;
-                        }
-                        console.log("Form submitted, showing loading animation.");
-                        loadingContainer.style.display = 'block';
-                    });
-                } else {
-                     console.error("Could not find reportForm or loadingAnimationContainer elements.")
-                }
-
-                const scrollToTopButton = document.getElementById('scrollToTopBtn');
-                 window.onscroll = function() {
-                    if (document.body.scrollTop > 200 || document.documentElement.scrollTop > 200) { // Show after scrolling down a bit
-                        scrollToTopButton.style.display = "block";
-                    } else {
-                        scrollToTopButton.style.display = "none";
-                    }
-                };
             });
 
+            // Scroll-to-top function
             function scrollToTop() {
-                 window.scrollTo({ top: 0, behavior: 'smooth' });
+                const majorFindingsSection = document.getElementById('majorFindings');
+                if (majorFindingsSection) {
+                    majorFindingsSection.scrollIntoView({ behavior: 'smooth' });
+                }
             }
 
+            // Show loading animation on form submission
+            document.getElementById('reportForm').addEventListener('submit', function() {
+                document.getElementById('loadingAnimation').style.display = 'block';
+            });
         </script>
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     </body>
 </html>
-"""
-    # Pass the selected model to the template context as 'chosen_model'
-    # Pass the original input text back to the textarea
-    return render_template_string(template,
-                                  case_data=case_data,
-                                  custom_prompt=custom_prompt,
-                                  chosen_model=selected_model, # Passes selection back to template
-                                  report_text_input=report_text_input)
+    """
+
+    return render_template_string(template, case_data=case_data, custom_prompt=custom_prompt)
 
 if __name__ == '__main__':
-    if not client:
-         print("\n !!! WARNING: OpenAI client failed to initialize. API calls will fail. Ensure OPENAI_API_KEY is set correctly. !!! \n")
-    # Set debug=False for production/general use
-    app.run(debug=False, host='0.0.0.0', port=5001)
+    app.run(debug=True)
