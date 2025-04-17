@@ -136,7 +136,7 @@ def get_summary(case_text, custom_prompt, case_number):
     try:
         logger.info(f"Processing case {case_number}")
         response = client.chat.completions.create(
-            model="gpt-4.1",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that outputs structured JSON summaries of radiology report differences."},
                 {"role": "user", "content": f"{custom_prompt}\nCase Number: {case_number}\n{case_text}"}
