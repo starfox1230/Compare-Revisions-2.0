@@ -466,7 +466,7 @@ def index():
                                 <hr>
                             </div>
                         `;
-                        console.log(\`Displayed error for case \${caseObj.case_num}.\`);
+                        console.log(`Displayed error for case ${caseObj.case_num}.`);
                         return;
                     }
                     container.innerHTML += `
@@ -508,7 +508,7 @@ def index():
                             <hr>
                         </div>
                     `;
-                    console.log(\`Displayed case \${caseObj.case_num}.\`);
+                    console.log(`Displayed case ${caseObj.case_num}.`);
                 });
                 console.log("All cases displayed.");
             }
