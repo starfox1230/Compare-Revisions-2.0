@@ -169,21 +169,45 @@ def get_summary(case_text, custom_prompt, case_number):
         logger.info(f"Processing case {case_number}")
         response = client.responses.create(
             model="gpt-5-mini",
-            input=f"{custom_prompt}\nCase Number: {case_number}\n{case_text}",
-            max_tokens=2000,
+            instructions=custom_prompt,          # <-- put your prompt here
+            input=f"Case Number: {case_number}\n{case_text}",
+            max_output_tokens=2000,              # <-- correct name
             temperature=0.5,
-            # you can also control verbosity or reasoning here if you like:
-            reasoning={"effort":"minimal"},
-            text={"verbosity":"low"}
+            reasoning={"effort": "minimal"},
+            text={"verbosity": "low"},
+            # strongly recommended: structured outputs
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "CaseSummary",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "case_number": {"type": ["string", "number"]},
+                            "major_findings": {"type": "array", "items": {"type": "string"}},
+                            "minor_findings": {"type": "array", "items": {"type": "string"}},
+                            "clarifications": {"type": "array", "items": {"type": "string"}},
+                            "score": {"type": "integer"}
+                        },
+                        "required": ["case_number", "major_findings", "minor_findings", "clarifications", "score"],
+                        "additionalProperties": False
+                    }
+                }
+            }
         )
-        response_content = response.choices[0].text
+
+        # With structured outputs, use the helper; otherwise use output_text
+        response_content = response.output_text
         logger.info(f"Received response for case {case_number}: {response_content}")
         return json.loads(response_content)
+
     except json.JSONDecodeError as jde:
         logger.error(f"JSON decode error for case {case_number}: {jde}")
         return {"case_number": case_number, "error": "Invalid JSON response from AI."}
     except Exception as e:
-        logger.error(f"Error processing case {case_number}: {e}")
+        # If available, include request id to speed support/debugging
+        req_id = getattr(locals().get('response', None), "_request_id", None)
+        logger.error(f"Error processing case {case_number}: {e} (request_id={req_id})")
         return {"case_number": case_number, "error": "Error processing AI"}
 
 # Process cases for summaries with concurrency
