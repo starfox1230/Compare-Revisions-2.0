@@ -171,10 +171,10 @@ def get_summary(case_text, custom_prompt, case_number):
             model="gpt-5-mini",
             input=f"{custom_prompt}\nCase Number: {case_number}\n{case_text}",
             max_tokens=2000,
-            temperature=0.5
+            temperature=0.5,
             # you can also control verbosity or reasoning here if you like:
             reasoning={"effort":"minimal"},
-            # text={"verbosity":"low"}
+            text={"verbosity":"low"}
         )
         response_content = response.choices[0].text
         logger.info(f"Received response for case {case_number}: {response_content}")
