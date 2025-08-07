@@ -4,20 +4,30 @@ import re
 import os
 import json
 import logging
-from openai import OpenAI  # Ensure correct import based on your OpenAI library version
+import openai as _openai_pkg          # for version logging
+from openai import OpenAI             # official client
+from openai import (                  # clearer error logs
+    APIError,
+    APIConnectionError,
+    BadRequestError,
+    AuthenticationError,
+    RateLimitError,
+)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = Flask(__name__)
 
 # Configure logging with timestamp and log level
 logging.basicConfig(
-    level=logging.DEBUG,  # Set to DEBUG for detailed logs during troubleshooting
+    level=logging.DEBUG,  # DEBUG while we’re fixing this
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
+    handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
+
+# Startup diagnostics
+logger.info(f"openai sdk version: {_openai_pkg.__version__}")
+logger.info(f"API key present: {bool(os.getenv('OPENAI_API_KEY'))}")
 
 # Initialize OpenAI API key
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -33,7 +43,6 @@ DEFAULT_PROMPT = """Developer: You are a helpful assistant that outputs structur
 
 Assume the attending's version is correct. Do not include findings present only in the resident's report. Keep your responses concise.
 
-Begin with a concise checklist (3-7 bullets) of what you will do; keep items conceptual, not implementation-level.
 After reviewing each case, if any arrays are non-empty, validate that findings match the categories and adjacency as defined above. If a finding cannot be clearly categorized, use the highest-priority category (major > minor > clarification).
 
 Input will provide the case reports. Output your answer as structured JSON following this format:
@@ -76,11 +85,11 @@ Example (multiple cases):
 ]
 """
 
-# Normalize text: trim spaces but keep returns (newlines) intact
+# --- helpers ---------------------------------------------------------------
+
 def normalize_text(text):
     return "\n".join([line.strip() for line in text.splitlines() if line.strip()])
 
-# Remove "attending review" lines for comparison purposes
 def remove_attending_review_line(text):
     excluded_lines = [
         "As the attending physician, I have personally reviewed the images, interpreted and/or supervised the study or procedure, and agree with the wording of the above report.",
@@ -88,52 +97,37 @@ def remove_attending_review_line(text):
     ]
     return "\n".join([line for line in text.splitlines() if line.strip() not in excluded_lines])
 
-# Calculate percentage change between two reports
 def calculate_change_percentage(resident_text, attending_text):
     matcher = difflib.SequenceMatcher(None, resident_text.split(), attending_text.split())
     return round((1 - matcher.ratio()) * 100, 2)
 
-# Compare reports section by section
 def split_into_paragraphs(text):
-    # Split the text into paragraphs based on double line breaks or single line breaks after punctuation
     paragraphs = re.split(r'\n{2,}|\n(?=\w)', text)
     return [para.strip() for para in paragraphs if para.strip()]
 
 def create_diff_by_section(resident_text, attending_text):
-    # Normalize text for comparison
     resident_text = normalize_text(resident_text)
     attending_text = normalize_text(remove_attending_review_line(attending_text))
 
-    # Split text into paragraphs instead of sentences
     resident_paragraphs = split_into_paragraphs(resident_text)
     attending_paragraphs = split_into_paragraphs(attending_text)
 
     diff_html = ""
-
-    # Use SequenceMatcher on the paragraph level first
     matcher = difflib.SequenceMatcher(None, resident_paragraphs, attending_paragraphs)
     for opcode, a1, a2, b1, b2 in matcher.get_opcodes():
-        # Handle matched (equal) paragraphs
         if opcode == 'equal':
             for paragraph in resident_paragraphs[a1:a2]:
                 diff_html += paragraph + "<br><br>"
-
-        # Handle inserted paragraphs as a block
         elif opcode == 'insert':
             for paragraph in attending_paragraphs[b1:b2]:
                 diff_html += f'<div style="color:lightgreen;">[Inserted: {paragraph}]</div><br><br>'
-
-        # Handle deleted paragraphs as a block
         elif opcode == 'delete':
             for paragraph in resident_paragraphs[a1:a2]:
                 diff_html += f'<div style="color:#ff6b6b;text-decoration:line-through;">[Deleted: {paragraph}]</div><br><br>'
-
-        # Handle paragraph replacements by word-by-word comparison within each paragraph
         elif opcode == 'replace':
             res_paragraphs = resident_paragraphs[a1:a2]
             att_paragraphs = attending_paragraphs[b1:b2]
             for res_paragraph, att_paragraph in zip(res_paragraphs, att_paragraphs):
-                # Compare the words within the mismatched paragraphs
                 word_matcher = difflib.SequenceMatcher(None, res_paragraph.split(), att_paragraph.split())
                 for word_opcode, w_a1, w_a2, w_b1, w_b2 in word_matcher.get_opcodes():
                     if word_opcode == 'equal':
@@ -158,63 +152,68 @@ def create_diff_by_section(resident_text, attending_text):
                             " ".join(att_paragraph.split()[w_b1:w_b2]) +
                             '</span> '
                         )
-
-                diff_html += "<br><br>"  # Separate each replaced paragraph with line breaks
-
+                diff_html += "<br><br>"
     return diff_html
 
-# AI function to get a structured JSON summary of report differences
+def scrub_instructions(text: str) -> str:
+    """Remove lines that would force non-JSON preamble."""
+    lines = []
+    for line in text.splitlines():
+        if "Begin with a concise checklist" in line:
+            continue
+        lines.append(line)
+    # Add one guardrail line
+    lines.append("Output only JSON with no preamble, no checklist, no explanation.")
+    return "\n".join(lines)
+
+# --- OpenAI call -----------------------------------------------------------
+
 def get_summary(case_text, custom_prompt, case_number):
     try:
         logger.info(f"Processing case {case_number}")
+
         response = client.responses.create(
             model="gpt-5-mini",
-            instructions=custom_prompt,          # <-- put your prompt here
+            instructions=scrub_instructions(custom_prompt),
             input=f"Case Number: {case_number}\n{case_text}",
-            max_output_tokens=2000,              # <-- correct name
-            temperature=0.5,
-            reasoning={"effort": "minimal"},
-            text={"verbosity": "low"},
-            # strongly recommended: structured outputs
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "CaseSummary",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "case_number": {"type": ["string", "number"]},
-                            "major_findings": {"type": "array", "items": {"type": "string"}},
-                            "minor_findings": {"type": "array", "items": {"type": "string"}},
-                            "clarifications": {"type": "array", "items": {"type": "string"}},
-                            "score": {"type": "integer"}
-                        },
-                        "required": ["case_number", "major_findings", "minor_findings", "clarifications", "score"],
-                        "additionalProperties": False
-                    }
-                }
-            }
+            max_output_tokens=1200,
+            # Keep it simple first; re-add knobs after success:
+            # reasoning={"effort": "minimal"},
+            # text={"verbosity": "low"},
+            response_format={"type": "json_object"}
         )
 
-        # With structured outputs, use the helper; otherwise use output_text
-        response_content = response.output_text
-        logger.info(f"Received response for case {case_number}: {response_content}")
+        response_content = response.output_text  # official helper
+        logger.info(f"Received response for case {case_number}: {response_content[:500]}...")
         return json.loads(response_content)
 
+    except BadRequestError as e:
+        logger.error(f"[400] BadRequest: {e.message}")
+        return {"case_number": case_number, "error": f"400 BadRequest: {e.message}"}
+    except AuthenticationError as e:
+        logger.error(f"[401] AuthError: {e.message}")
+        return {"case_number": case_number, "error": "401 Unauthorized: check OPENAI_API_KEY"}
+    except RateLimitError as e:
+        logger.error(f"[429] RateLimit: {e.message}")
+        return {"case_number": case_number, "error": "429 Rate limited"}
+    except APIConnectionError as e:
+        logger.error(f"[NET] APIConnectionError: {e.message}")
+        return {"case_number": case_number, "error": "Network error"}
+    except APIError as e:
+        logger.error(f"[5xx] APIError: {e.message}")
+        return {"case_number": case_number, "error": "Server error"}
     except json.JSONDecodeError as jde:
         logger.error(f"JSON decode error for case {case_number}: {jde}")
         return {"case_number": case_number, "error": "Invalid JSON response from AI."}
     except Exception as e:
-        # If available, include request id to speed support/debugging
-        req_id = getattr(locals().get('response', None), "_request_id", None)
-        logger.error(f"Error processing case {case_number}: {e} (request_id={req_id})")
+        logger.error(f"Unhandled error for case {case_number}: {repr(e)}")
         return {"case_number": case_number, "error": "Error processing AI"}
 
-# Process cases for summaries with concurrency
-def process_cases(cases_data, custom_prompt, max_workers=100):
+# --- pipeline --------------------------------------------------------------
+
+def process_cases(cases_data, custom_prompt, max_workers=8):
     structured_output = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all summary tasks to the executor
         future_to_case = {
             executor.submit(get_summary, case_text, custom_prompt, case_num): case_num
             for case_text, case_num in cases_data
@@ -225,8 +224,10 @@ def process_cases(cases_data, custom_prompt, max_workers=100):
             case_num = future_to_case[future]
             try:
                 parsed_json = future.result() or {}
-                # Use AI's score if available
-                parsed_json['score'] = parsed_json.get('score', len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', [])))
+                parsed_json['score'] = parsed_json.get(
+                    'score',
+                    len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', []))
+                )
                 logger.info(f"Processed summary for case {case_num}: Score {parsed_json['score']}")
             except Exception as e:
                 logger.error(f"Error processing case {case_num}: {e}")
@@ -235,20 +236,19 @@ def process_cases(cases_data, custom_prompt, max_workers=100):
     logger.info(f"Completed processing {len(structured_output)} summaries.")
     return structured_output
 
-# Extract cases and add AI summary tab
 def extract_cases(text, custom_prompt):
     # Normalize line endings to Unix style
     text = text.replace('\r\n', '\n').replace('\r', '\n')
     logger.debug("Normalized line endings.")
-    
+
     # Split on 'Case <number>' at the start of a line
     cases = re.split(r'(?m)^Case\s+(\d+)', text, flags=re.IGNORECASE)
     logger.debug(f"SPLIT RESULT FOR CASES: {cases}")
-    
+
     logger.info(f"Total elements after split: {len(cases)}")
     for idx, element in enumerate(cases):
         logger.debug(f"Element {idx}: {element[:100]}{'...' if len(element) > 100 else ''}")
-    
+
     cases_data = []
     parsed_cases = []
 
@@ -258,10 +258,10 @@ def extract_cases(text, custom_prompt):
         case_content = cases[i + 1].strip() if i + 1 < len(cases) else ""
         logger.debug(f"Processing Case {case_num}:")
         logger.debug(f"Case Content: {case_content[:200]}{'...' if len(case_content) > 200 else ''}")
-        
+
         reports = re.split(r'\s*(Attending\s+Report\s*:|Resident\s+Report\s*:)\s*', case_content, flags=re.IGNORECASE)
         logger.debug(f"Reports split: {reports}")
-        
+
         if len(reports) >= 3:
             attending_report = reports[2].strip()
             resident_report = reports[4].strip() if len(reports) > 4 else ""
@@ -276,19 +276,16 @@ def extract_cases(text, custom_prompt):
         return parsed_cases
 
     # Process all summaries concurrently
-    ai_summaries = process_cases(cases_data, custom_prompt, max_workers=20)
+    ai_summaries = process_cases(cases_data, custom_prompt, max_workers=8)
 
     # Map each summary to its corresponding case
     for ai_summary in ai_summaries:
         case_num = ai_summary.get('case_number')
         if not case_num:
             logger.warning("Summary missing 'case_number'. Skipping.")
-            continue  # Skip if case_num is missing
-        
-        # **Convert case_num to string for accurate comparison**
+            continue
+
         case_num = str(case_num)
-        
-        # Find the corresponding case content
         case_content = next((ct for ct, num in cases_data if num == case_num), "")
         if case_content:
             try:
@@ -298,17 +295,21 @@ def extract_cases(text, custom_prompt):
                 logger.error(f"Error parsing reports for case {case_num}.")
                 continue
             parsed_cases.append({
-                'case_num': case_num,  # Already a string
+                'case_num': case_num,
                 'resident_report': resident_report,
                 'attending_report': attending_report,
                 'percentage_change': calculate_change_percentage(resident_report, remove_attending_review_line(attending_report)),
                 'diff': create_diff_by_section(resident_report, attending_report),
-                'summary': ai_summary if 'error' not in ai_summary else None
+                # keep the summary even if it has an error so UI can show the text
+                'summary': ai_summary if 'error' not in ai_summary else None,
+                'summary_error': ai_summary.get('error') if isinstance(ai_summary, dict) else None
             })
             logger.info(f"Assigned summary to case {case_num}.")
     logger.info(f"Total parsed_cases to return: {len(parsed_cases)}")
     logger.debug(f"Parsed_cases: {json.dumps(parsed_cases, indent=2)}")
     return parsed_cases
+
+# --- web -------------------------------------------------------------------
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -323,18 +324,16 @@ def index():
             logger.info("Starting case extraction and processing.")
             case_data = extract_cases(text_block, custom_prompt)
             logger.info(f"Completed case extraction and processing. Number of cases extracted: {len(case_data)}")
-            logger.debug(f"Extracted case_data: {json.dumps(case_data, indent=2)}")  # Detailed debug log
+            logger.debug(f"Extracted case_data: {json.dumps(case_data, indent=2)}")
 
-    # Log the case_data before passing to the template
     logger.info(f"Passing {len(case_data)} cases to the template.")
-    logger.debug(f"case_data being passed: {json.dumps(case_data, indent=2)}")  # Detailed debug log
+    logger.debug(f"case_data being passed: {json.dumps(case_data, indent=2)}")
 
     template = """
 <html>
     <head>
         <title>Radiology Report Diff & Summarizer</title>
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
-        <!-- Added dotlottie-player script -->
         <script src="https://unpkg.com/@dotlottie/player-component@2.7.12/dist/dotlottie-player.mjs" type="module"></script>
         <style>
             body { background-color: #1e1e1e; color: #dcdcdc; font-family: Arial, sans-serif; }
@@ -346,40 +345,17 @@ def index():
             .nav-tabs .nav-link { background-color: #333; border-color: #555; color: #dcdcdc; }
             .nav-tabs .nav-link.active { background-color: #007bff; border-color: #007bff #007bff #333; color: white; }
 
-            /* Scroll-to-top button */
             #scrollToTopBtn {
-                    position: fixed;
-                    right: 20px;
-                    bottom: 20px;
-                    background-color: #007bff;
-                    color: white;
-                    padding: 10px 15px;
-                    border-radius: 15px;
-                    border: none;
-                    cursor: pointer;
-                    z-index: 1000;
+                position: fixed; right: 20px; bottom: 20px; background-color: #007bff;
+                color: white; padding: 10px 15px; border-radius: 15px; border: none; cursor: pointer; z-index: 1000;
             }
-            #scrollToTopBtn:hover {
-                    background-color: #0056b3;
-            }
+            #scrollToTopBtn:hover { background-color: #0056b3; }
 
-            /* Links styling for night mode */
-            a {
-                    color: #66ccff; /* A softer blue that is easier on the eyes in night mode */
-                    text-decoration: none; /* Removes underline */
-            }
-            a:hover {
-                    color: #99e6ff; /* A lighter blue for hover state */
-                    text-decoration: none; /* Ensures no underline on hover */
-            }
+            a { color: #66ccff; text-decoration: none; }
+            a:hover { color: #99e6ff; text-decoration: none; }
 
-            /* Loading animation styling */
-            #loadingAnimation {
-                display: none; /* Hidden by default */
-                margin-top: 20px;
-            }
+            #loadingAnimation { display: none; margin-top: 20px; }
         </style>
-
     </head>
     <body>
         <div class="container">
@@ -394,9 +370,9 @@ def index():
                     <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="5">{{ custom_prompt }}</textarea>
                 </div>
                 <button type="submit" class="btn btn-primary">Compare & Summarize Reports</button>
-                <!-- Added dotlottie-player for loading animation -->
                 <dotlottie-player id="loadingAnimation" src="https://lottie.host/817661a8-2608-4435-89a5-daa620a64c36/WtsFI5zdEK.lottie" background="transparent" speed="1" style="width: 300px; height: 300px;" loop autoplay></dotlottie-player>
             </form>
+
             {% if case_data %}
                 <h3 id="majorFindings">Major Findings Missed</h3>
                 <ul>
@@ -408,6 +384,7 @@ def index():
                         {% endif %}
                     {% endfor %}
                 </ul>
+
                 <h3>Minor Findings Missed</h3>
                 <ul>
                     {% for case in case_data %}
@@ -418,25 +395,28 @@ def index():
                         {% endif %}
                     {% endfor %}
                 </ul>
+
                 <h3>Case Navigation</h3>
             {% endif %}
-            <!-- Always include these elements to prevent JS errors -->
+
             <div class="btn-group" role="group" aria-label="Sort Options">
                 <button type="button" class="btn btn-secondary" onclick="sortCases('case_number')">Sort by Case Number</button>
                 <button type="button" class="btn btn-secondary" onclick="sortCases('percentage_change')">Sort by Percentage Change</button>
                 <button type="button" class="btn btn-secondary" onclick="sortCases('summary_score')">Sort by Summary Score</button>
             </div>
+
             <ul id="caseNav"></ul>
             <div id="caseContainer"></div>
         </div>
-        <!-- Added scroll-to-top button -->
+
         <button id="scrollToTopBtn" onclick="scrollToTop()">Top ⬆</button>
+
         <script>
             let caseData = {{ case_data | tojson }};
-            console.log("Received caseData:", caseData); // Debugging
+            console.log("Received caseData:", caseData);
 
             function sortCases(option) {
-                console.log("Sorting cases by:", option); // Debugging
+                console.log("Sorting cases by:", option);
                 if (option === "case_number") {
                     caseData.sort((a, b) => parseInt(a.case_num) - parseInt(b.case_num));
                 } else if (option === "percentage_change") {
@@ -444,22 +424,18 @@ def index():
                 } else if (option === "summary_score") {
                     caseData.sort((a, b) => (b.summary && b.summary.score || 0) - (a.summary && a.summary.score || 0));
                 }
-                console.log("Sorted caseData:", caseData); // Debugging
+                console.log("Sorted caseData:", caseData);
                 displayCases();
                 displayNavigation();
             }
 
             function displayNavigation() {
                 const nav = document.getElementById('caseNav');
-                if (!nav) {
-                    console.error("Element with id 'caseNav' not found.");
-                    return; // Prevent errors if element not found
-                }
+                if (!nav) { console.error("Element with id 'caseNav' not found."); return; }
                 nav.innerHTML = '';
                 if (caseData.length === 0) {
                     nav.innerHTML = '<li>No cases to display.</li>';
-                    console.log("No cases to display in navigation.");
-                    return;
+                    console.log("No cases to display in navigation."); return;
                 }
                 console.log("Displaying navigation for cases.");
                 caseData.forEach(caseObj => {
@@ -474,15 +450,11 @@ def index():
 
             function displayCases() {
                 const container = document.getElementById('caseContainer');
-                if (!container) {
-                    console.error("Element with id 'caseContainer' not found.");
-                    return; // Prevent errors if element not found
-                }
+                if (!container) { console.error("Element with id 'caseContainer' not found."); return; }
                 container.innerHTML = '';
                 if (caseData.length === 0) {
                     container.innerHTML = '<p>No cases to display.</p>';
-                    console.log("No cases to display in container.");
-                    return;
+                    console.log("No cases to display in container."); return;
                 }
                 console.log("Displaying cases.");
                 caseData.forEach(caseObj => {
@@ -490,11 +462,11 @@ def index():
                         container.innerHTML += `
                             <div id="case${caseObj.case_num}">
                                 <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
-                                <p style="color: red;"><strong>Error:</strong> Unable to generate summary for this case.</p>
+                                <p style="color: red;"><strong>Error:</strong> ${caseObj.summary_error || 'Unable to generate summary for this case.'}</p>
                                 <hr>
                             </div>
                         `;
-                        console.log(`Displayed error for case ${caseObj.case_num}.`);
+                        console.log(\`Displayed error for case \${caseObj.case_num}.\`);
                         return;
                     }
                     container.innerHTML += `
@@ -536,7 +508,7 @@ def index():
                             <hr>
                         </div>
                     `;
-                    console.log(`Displayed case ${caseObj.case_num}.`);
+                    console.log(\`Displayed case \${caseObj.case_num}.\`);
                 });
                 console.log("All cases displayed.");
             }
@@ -551,7 +523,6 @@ def index():
                 }
             });
 
-            // Scroll-to-top function
             function scrollToTop() {
                 const majorFindingsSection = document.getElementById('majorFindings');
                 if (majorFindingsSection) {
@@ -559,7 +530,6 @@ def index():
                 }
             }
 
-            // Show loading animation on form submission
             document.getElementById('reportForm').addEventListener('submit', function() {
                 document.getElementById('loadingAnimation').style.display = 'block';
             });
