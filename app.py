@@ -23,25 +23,57 @@ logger = logging.getLogger(__name__)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Default customized prompt
-DEFAULT_PROMPT = """Succinctly organize the changes made by the attending to the resident's radiology reports into: 
-1) missed major findings (findings discussed by the attending but not by the resident that also fit under these categories: retained sponge or other clinically significant foreign body, mass or tumor, malpositioned line or tube of immediate clinical concern, life-threatening hemorrhage or vascular disruption, necrotizing fasciitis, free air or active leakage from the GI tract, ectopic pregnancy, intestinal ischemia or portomesenteric gas, ovarian torsion, testicular torsion, placental abruption, absent perfusion in a postoperative transplant, renal collecting system obstruction with signs of infection, acute cholecystitis, intracranial hemorrhage, midline shift, brain herniation, cerebral infarction or abscess or meningoencephalitis, airway compromise, abscess or discitis, hemorrhage, cord compression or unstable spine fracture or transection, acute cord hemorrhage or infarct, pneumothorax, large pericardial effusion, findings suggestive of active TB, impending pathologic fracture, acute fracture, absent perfusion in a postoperative kidney, brain death, high probability ventilation/perfusion (VQ) lung scan, arterial dissection or occlusion, acute thrombotic or embolic event including DVT and pulmonary thromboembolism, and aneurysm or vascular disruption), 
-2) missed minor findings (this includes all other pathologies not in the above list that were discussed by the attending but not by the resident), and 
-3) clarified descriptions of findings (this includes findings removed by the attending, findings re-worded by the attending, etc). 
-Assume the attending's version was correct, and anything not included by the attending but was included by the resident should have been left out by the resident. Keep your answers brief and to the point. The reports are: 
-Please output your response as structured JSON, with the following keys:
-- "case_number": The case number sent in the request.
-- "major_findings": A list of any major findings missed by the resident (as described above).
-- "minor_findings": A list of minor findings discussed by the attending but not by the resident (as described above).
-- "clarifications": A list of any clarifications the attending made (as described above).
-- "score": The calculated score, where each major finding is worth 3 points and each minor finding is worth 1 point.
-Respond in this JSON format, with no other additional text or pleasantries:
+DEFAULT_PROMPT = """Developer: You are a helpful assistant that outputs structured JSON summaries of radiology report differences. Categorize the changes made by the attending to the resident's radiology reports into three sections:
+
+1. major_findings: List findings discussed by the attending but not by the resident that fall under the following critical categories: retained foreign body, mass/tumor, malpositioned line/tube of immediate clinical concern, life-threatening hemorrhage/vascular disruption, necrotizing fasciitis, free air or active GI leak, ectopic pregnancy, intestinal ischemia or portomesenteric gas, ovarian/testicular torsion, placental abruption, absent perfusion in a postoperative transplant, infected renal collecting system obstruction, acute cholecystitis, intracranial hemorrhage, midline shift, brain herniation, cerebral infarction/abscess/meningoencephalitis, airway compromise, abscess/discitis, hemorrhage, cord compression/unstable spine fracture/transection, acute cord hemorrhage/infarct, pneumothorax, large pericardial effusion, findings suggestive of active TB, impending pathologic fracture, acute fracture, absent perfusion in postoperative kidney, brain death, high probability VQ scan, arterial dissection/occlusion, acute thrombotic/embolic event (DVT, PE), aneurysm or vascular disruption.
+
+2. minor_findings: List all other pathologies not in the above major findings category that the attending discussed but the resident did not.
+
+3. clarifications: List changes such as findings the attending removed or reworded.
+
+Assume the attending's version is correct. Do not include findings present only in the resident's report. Keep your responses concise.
+
+Begin with a concise checklist (3-7 bullets) of what you will do; keep items conceptual, not implementation-level.
+After reviewing each case, if any arrays are non-empty, validate that findings match the categories and adjacency as defined above. If a finding cannot be clearly categorized, use the highest-priority category (major > minor > clarification).
+
+Input will provide the case reports. Output your answer as structured JSON following this format:
+For each case, return an object with these keys:
+- "case_number": as provided.
+- "major_findings": array, ordered as in attending's report, or [] if none.
+- "minor_findings": array, ordered as in attending's report, or [] if none.
+- "clarifications": array, or [] if none.
+- "score": integer, calculate as: (3 x number of major findings) + (1 x number of minor findings).
+
+For multiple cases, return a JSON array of such objects. For a single case, return a single object.
+
+If input is malformed or incomplete, return the provided case_number, all arrays empty, and score 0.
+
+Example (single case):
 {
-  "case_number": <case_number>,
-  "major_findings": [<major_findings>],
-  "minor_findings": [<minor_findings>],
-  "clarifications": [<clarifications>],
-  "score": <score>
+  "case_number": 12345,
+  "major_findings": ["acute cholecystitis", "malpositioned line of immediate concern"],
+  "minor_findings": ["small pleural effusion"],
+  "clarifications": ["clarified wording of effusion description"],
+  "score": 7
 }
+
+Example (multiple cases):
+[
+  {
+    "case_number": 12345,
+    "major_findings": ["acute cholecystitis"],
+    "minor_findings": [],
+    "clarifications": [],
+    "score": 3
+  },
+  {
+    "case_number": 12346,
+    "major_findings": [],
+    "minor_findings": ["small effusion"],
+    "clarifications": ["removed duplicate mention of cyst"],
+    "score": 1
+  }
+]
 """
 
 # Normalize text: trim spaces but keep returns (newlines) intact
@@ -135,14 +167,12 @@ def create_diff_by_section(resident_text, attending_text):
 def get_summary(case_text, custom_prompt, case_number):
     try:
         logger.info(f"Processing case {case_number}")
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that outputs structured JSON summaries of radiology report differences."},
-                {"role": "user", "content": f"{custom_prompt}\nCase Number: {case_number}\n{case_text}"}
-            ],
-            max_tokens=2000,
-            temperature=0.5
+        response = client.responses.create(
+            model="gpt-5-mini",
+            input=f"{custom_prompt}\nCase Number: {case_number}\n{case_text}"},
+            reasoning={
+                "effort": "minimal"
+            }
         )
         response_content = response.choices[0].message.content
         logger.info(f"Received response for case {case_number}: {response_content}")
