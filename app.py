@@ -143,6 +143,7 @@ def get_summary(case_text, custom_prompt, case_number):
     try:
         logger.info(f"Processing case {case_number} with model={MODEL_ID}")
 
+        # The 'text' parameter structure has been corrected below
         response = client.responses.create(
             model=MODEL_ID,
             instructions=custom_prompt,
@@ -157,28 +158,27 @@ def get_summary(case_text, custom_prompt, case_number):
                 "verbosity": "low",
                 "format": {
                     "type": "json_schema",
-                    # <-- moved here (required): text.format.name
+                    # The name of your schema
                     "name": "CaseSummary",
-                    "json_schema": {
-                        "strict": True,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "case_number": {"type": ["string", "number"]},
-                                "major_findings": {"type": "array", "items": {"type": "string"}},
-                                "minor_findings": {"type": "array", "items": {"type": "string"}},
-                                "clarifications": {"type": "array", "items": {"type": "string"}},
-                                "score": {"type": "integer"}
-                            },
-                            "required": [
-                                "case_number",
-                                "major_findings",
-                                "minor_findings",
-                                "clarifications",
-                                "score"
-                            ],
-                            "additionalProperties": False
-                        }
+                    # The 'schema' object should be a direct child of 'format'
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "case_number": {"type": ["string", "number"]},
+                            "major_findings": {"type": "array", "items": {"type": "string"}},
+                            "minor_findings": {"type": "array", "items": {"type": "string"}},
+                            "clarifications": {"type": "array", "items": {"type": "string"}},
+                            "score": {"type": "integer"}
+                        },
+                        "required": [
+                            "case_number",
+                            "major_findings",
+                            "minor_findings",
+                            "clarifications",
+                            "score"
+                        ],
+                        "additionalProperties": False,
+                        "strict": True # Moved strict into the schema definition
                     }
                 }
             },
