@@ -689,6 +689,12 @@ Attending Report:
             <button class="btn btn-outline-info" type="button" id="downloadAllBtn">
               <i class="bi bi-download"></i> Download JSON
             </button>
+            <!-- NEW: Upload button + hidden input (added) -->
+            <button class="btn btn-outline-info" type="button" id="uploadBtn">
+              <i class="bi bi-upload"></i> Upload JSON
+            </button>
+            <input type="file" id="uploadInput" accept="application/json" style="display:none" />
+            <!-- END NEW -->
           </div>
         </div>
       </form>
@@ -1129,6 +1135,85 @@ No pulmonary embolism.`;
       a.href = url; a.download = 'summaries.json'; a.click();
       URL.revokeObjectURL(url);
     });
+
+    // ---------- NEW: Upload JSON handlers (added) ----------
+    const uploadBtn = document.getElementById('uploadBtn');
+    const uploadInput = document.getElementById('uploadInput');
+
+    uploadBtn.addEventListener('click', () => uploadInput.click());
+
+    uploadInput.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        startLoading();
+        showOverlay('Loading JSON…');
+
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+
+        // Accept either the original summaries-only export (array) or a richer object with "cases"
+        function normalizeFromSummariesOnly(arr) {
+          if (!Array.isArray(arr)) return null;
+          return arr.map(x => ({
+            case_num: String(x.case_number ?? ''),
+            resident_report: '',
+            attending_report: '',
+            percentage_change: 0,
+            diff: '',
+            summary: x.summary || null,
+            summary_error: x.error || null
+          }));
+        }
+        function normalizeFromFullState(obj) {
+          if (!obj || !Array.isArray(obj.cases)) return null;
+          return obj.cases.map(c => ({
+            case_num: String(c.case_num ?? c.case_number ?? ''),
+            resident_report: c.resident_report || '',
+            attending_report: c.attending_report || '',
+            percentage_change: typeof c.percentage_change === 'number' ? c.percentage_change : 0,
+            diff: c.diff || '',
+            summary: c.summary || null,
+            summary_error: c.summary_error || null
+          }));
+        }
+
+        let restored = null;
+        if (Array.isArray(parsed)) {
+          restored = normalizeFromSummariesOnly(parsed);
+        } else if (parsed && typeof parsed === 'object') {
+          if (Array.isArray(parsed.cases)) {
+            restored = normalizeFromFullState(parsed);
+            if (parsed.custom_prompt != null) {
+              document.getElementById('custom_prompt').value = parsed.custom_prompt;
+            }
+          } else if (Array.isArray(parsed.summariesOnly)) {
+            restored = normalizeFromSummariesOnly(parsed.summariesOnly);
+          }
+        }
+
+        if (!restored) {
+          toast('Unrecognized JSON format', 2200);
+          hideOverlay(); endLoading();
+          e.target.value = '';
+          return;
+        }
+
+        caseData = restored;
+        sortBy('number');
+        applySortVisual('number');
+        renderAll(caseData);
+        toast('Upload complete');
+      } catch (err) {
+        console.error(err);
+        toast('Failed to load JSON', 2200);
+      } finally {
+        hideOverlay();
+        endLoading();
+        e.target.value = '';
+      }
+    });
+    // ---------- END NEW ----------
 
     // ---------- Utils ----------
     function toggleCollapse(id) {
