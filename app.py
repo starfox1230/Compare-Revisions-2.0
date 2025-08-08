@@ -418,11 +418,10 @@ def get_summary(case_text, custom_prompt, case_number):
                 f"Case Number: {case_number}\n{case_text}"
             ),
             max_output_tokens=1200,
-            reasoning={"effort": "medium"},
-            text={
-                "verbosity": "low",
-                "format": {
-                    "type": "json_schema",
+            temperature=0,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
                     "name": "CaseSummary",
                     "schema": {
                         "type": "object",
@@ -433,16 +432,10 @@ def get_summary(case_text, custom_prompt, case_number):
                             "clarifications": {"type": "array", "items": {"type": "string"}},
                             "score": {"type": "integer"}
                         },
-                        "required": [
-                            "case_number",
-                            "major_findings",
-                            "minor_findings",
-                            "clarifications",
-                            "score"
-                        ],
-                        "additionalProperties": False,
-                        "strict": True
-                    }
+                        "required": ["case_number","major_findings","minor_findings","clarifications","score"],
+                        "additionalProperties": False
+                    },
+                    "strict": True
                 }
             },
         )
