@@ -1,8 +1,4 @@
-Alright, here’s a single-file Flask app that keeps all your existing functionality *and* upgrades the diff UI to something you can trust for radiology conclusions. The visual diff is now built **client-side** with **jsdiff**, using a **sentence/bullet-aware aligner** and then **word-level** highlighting per aligned sentence. You get both **Unified** and **Side-by-Side** modes with a toggle, proper wrapping, and a clean right border. The left case list is minimalist, collapsible to a slim rail, and the sort/toggle buttons live there (and mirror to the rail when collapsed).
 
-Per your instruction, the default prompt is left blank.
-
-```python
 from flask import Flask, render_template_string, request
 import difflib, re, os, json, logging
 import openai as _openai_pkg
@@ -1067,4 +1063,3 @@ Attending Report:
 # Local debugging only
 if __name__ == '__main__':
     app.run(debug=True, port=5001)
-```
