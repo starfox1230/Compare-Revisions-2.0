@@ -308,7 +308,7 @@ Attending: “Sigmoid diverticulitis with trace adjacent fluid; no abscess.”
 → score: 0
 
 </examples>
-"""  
+"""
 
 # --------------------------- Helpers ---------------------------------
 def normalize_text(text):
@@ -534,6 +534,7 @@ def index():
       --bg:#0f1115;--panel:#171a21;--panel-2:#1c2028;--text:#e6e6e6;--muted:#aeb4c0;
       --primary:#4da3ff;--primary-2:#2a84f2;--green:#2bd47d;--red:#ff6b6b;--chip-major:#ff375f;--chip-minor:#ffd166;--chip-clar:#6ee7ff;
       --border:#2a2f3a;
+      --rail:56px; /* minimalist collapsed sidebar width */
     }
     html,body{height:100%}
     body{
@@ -563,20 +564,68 @@ def index():
     .word.ins{color:var(--green);font-weight:600}
     .word.del{color:var(--red);text-decoration:line-through}
     .loading-bar{position:fixed;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,var(--primary),#7ab8ff);z-index:1000;transition:width .3s ease}
-    .layout{display:grid;grid-template-columns: 280px 1fr; gap:14px}
-    .layout.collapsed{grid-template-columns: 0px 1fr}
-    .sidebar{position:sticky;top:12px;height:calc(100vh - 24px);overflow:auto;padding:10px;transition:width .25s ease, opacity .25s ease}
-    .layout.collapsed .sidebar{width:0;opacity:0;pointer-events:none}
-    .sidebar-toggle{position:sticky; top:12px; z-index:10}
-    .toggle-btn{border-radius:10px;border:1px solid var(--border);background:#121722;color:#c6d4f2}
-    .toggle-btn[aria-pressed="true"]{background:#0e1320;color:#9fb9ff}
-    .sort-btn{border-radius:10px;border:1px solid var(--border);background:#121722;color:#c6d4f2}
-    .sort-btn.active{outline:2px solid rgba(77,163,255,.35)}
-    .sort-btn .mode{font-weight:700;color:#b7d3ff}
-    .case-card{scroll-margin-top:90px}
+
+    /* Layout: collapsible left, content right with right border */
+    .layout{
+      display:grid;
+      grid-template-columns: 320px 1fr;
+      gap:14px;
+      align-items:start;
+    }
+    .layout.collapsed{
+      grid-template-columns: var(--rail) 1fr;
+    }
+
+    .sidebar-col{position:sticky;top:12px;height:calc(100vh - 24px)}
+    .sidebar{
+      height:100%;overflow:auto;padding:10px;
+    }
+    /* minimalist rail shown when collapsed */
+    .rail{
+      height:100%;display:none;align-items:flex-start;justify-content:center;
+    }
+    .layout.collapsed .rail{display:flex}
+    .layout.collapsed .sidebar{display:none}
+
+    .rail .rail-inner{
+      display:flex;flex-direction:column;gap:10px;margin-top:8px;
+      width:var(--rail);align-items:center;
+    }
+    .rail .icon-btn{
+      width:38px;height:38px;border-radius:10px;border:1px solid var(--border);
+      background:#121722;color:#c6d4f2;display:flex;align-items:center;justify-content:center;
+    }
+    .rail .icon-btn:hover{background:#161c2a;color:#fff}
+
+    /* Sidebar minimalist list */
+    .case-nav a{
+      display:flex;align-items:center;gap:.5rem;
+      padding:.4rem .5rem;border-radius:8px;color:var(--text);
+    }
+    .case-nav a:hover{background:#1a2030}
+    .case-nav .meta{color:#99a3b6;font-size:.8rem}
+    .sidebar h6{font-size:.95rem;margin:0}
+
+    /* Right container with visible right border and wrapping */
+    #resultsPanel{
+      padding:8px;
+      box-shadow: inset -1px 0 0 var(--border); /* subtle right border “fit” */
+    }
+    pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;margin:0}
+
     .tabs{border-bottom:1px solid var(--border)}
     .tabs .nav-link{color:#aeb4c0}
     .tabs .nav-link.active{color:var(--text);background:#1a202c;border-color:var(--border) var(--border) #1a202c}
+
+    /* Buttons in sidebar */
+    .toggle-btn,.sort-btn,.side-btn{
+      border-radius:10px;border:1px solid var(--border);background:#121722;color:#c6d4f2
+    }
+    .toggle-btn[aria-pressed="true"]{background:#0e1320;color:#9fb9ff}
+    .sort-btn.active{outline:2px solid rgba(77,163,255,.35)}
+    .sort-btn .mode{font-weight:700;color:#b7d3ff}
+
+    .case-card{scroll-margin-top:90px}
     .kbd{border:1px solid #3a4252;border-bottom-color:#2e3543;background:#1a1f2b;padding:.15rem .35rem;border-radius:6px;font-size:.8rem;color:var(--muted)}
     .toaster{position:fixed;right:18px;bottom:18px;z-index:50;background:#1c2432;border:1px solid #2a3547;color:#d7e3ff;padding:.65rem .8rem;border-radius:10px;display:none}
   </style>
@@ -622,60 +671,77 @@ Attending Report:
             <button class="btn btn-outline-info" type="button" id="downloadAllBtn">
               <i class="bi bi-download"></i> Download JSON
             </button>
-            <!-- Sort mode visual state -->
-            <button class="sort-btn ms-auto px-3 py-2" type="button" id="sortCaseBtn" data-mode="number" aria-pressed="true" title="Cycle sort (Number → Change → Score)">
-              <i class="bi bi-sort-numeric-down me-1"></i>
-              Sort: <span class="mode" id="sortModeLabel">Case #</span>
-            </button>
-            <!-- Sidebar collapsible toggle -->
-            <button class="toggle-btn px-3 py-2" type="button" id="toggleSidebarBtn" aria-pressed="false" title="Show/Hide case list">
-              <i class="bi bi-layout-sidebar-inset me-1"></i>
-              Case List
-            </button>
           </div>
         </div>
       </form>
     </div>
   </div>
 
-  <!-- Beneath: Two-column area with collapsible left sidebar and main content filling width -->
+  <!-- Beneath: Collapsible left sidebar + right content -->
   <div class="container-fluid">
     <div id="gridLayout" class="layout">
-      <!-- Left floating/collapsible sidebar -->
-      <div class="sidebar panel">
-        <div class="d-flex align-items-center gap-2 mb-2">
-          <i class="bi bi-list-stars text-primary"></i>
-          <strong>Cases</strong>
-          <span class="ms-auto badge badge-score" id="caseCountBadge">0</span>
-        </div>
-        <input id="searchInput" class="form-control form-control-sm mb-2" placeholder="Search text or Case # (press F)"/>
-        <div class="d-flex flex-wrap gap-2 mb-2">
-          <button class="btn btn-outline-secondary btn-sm" id="filterMajorsBtn"><i class="bi bi-exclamation-octagon"></i> Majors only</button>
-          <button class="btn btn-outline-secondary btn-sm" id="filterErrorsBtn"><i class="bi bi-bug"></i> Errors only</button>
-          <button class="btn btn-outline-secondary btn-sm" id="expandAllBtn"><i class="bi bi-arrows-expand"></i> Expand all</button>
-          <button class="btn btn-outline-secondary btn-sm" id="collapseAllBtn"><i class="bi bi-arrows-collapse"></i> Collapse all</button>
-        </div>
-        <div id="aggregateBlock" class="panel-2 p-2 mb-2 d-none">
-          <div class="d-flex align-items-center gap-2 mb-1">
-            <span class="chip major">Major <span id="aggMajor">0</span></span>
-            <span class="chip minor">Minor <span id="aggMinor">0</span></span>
-            <span class="chip clar">Clar <span id="aggClar">0</span></span>
-          </div>
-          <div class="progress" title="Percent major across all items">
-            <div class="progress-bar" id="aggBar" style="width:0%"></div>
+      <!-- Left column: contains full sidebar AND minimalist rail -->
+      <div class="sidebar-col">
+        <!-- Minimalist rail (shown when collapsed) -->
+        <div class="rail">
+          <div class="rail-inner">
+            <button class="icon-btn" id="toggleSidebarBtnRail" aria-pressed="true" title="Expand case list">
+              <i class="bi bi-layout-sidebar-inset"></i>
+            </button>
+            <button class="icon-btn" id="sortCaseBtnRail" data-mode="number" title="Cycle sort">
+              <i class="bi bi-sort-numeric-down"></i>
+            </button>
           </div>
         </div>
-        <div id="caseNav" class="case-nav"></div>
-        <div class="mt-3 small text-secondary">
-          <div><span class="kbd">J</span>/<span class="kbd">K</span> next/prev</div>
-          <div><span class="kbd">1–4</span> tabs</div>
-          <div><span class="kbd">F</span> focus search</div>
-          <div><span class="kbd">S</span> cycle sort</div>
-          <div><span class="kbd">G</span><span class="mx-1">G</span> top</div>
+
+        <!-- Full sidebar (hidden when collapsed) -->
+        <div class="sidebar panel">
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <h6 class="mb-0">Cases</h6>
+            <span class="ms-auto badge badge-score" id="caseCountBadge">0</span>
+          </div>
+          <div class="d-flex gap-2 mb-2">
+            <button class="toggle-btn px-2 py-1" type="button" id="toggleSidebarBtn" aria-pressed="false" title="Hide case list">
+              <i class="bi bi-layout-sidebar-inset-reverse me-1"></i> Hide
+            </button>
+            <button class="sort-btn px-2 py-1" type="button" id="sortCaseBtn" data-mode="number" aria-pressed="true" title="Cycle sort (Case # → Δ Change → Score)">
+              <i class="bi bi-sort-numeric-down me-1"></i>
+              Sort: <span class="mode" id="sortModeLabel">Case #</span>
+            </button>
+          </div>
+          <input id="searchInput" class="form-control form-control-sm mb-2" placeholder="Search text or Case # (F)"/>
+
+          <div class="d-flex flex-wrap gap-2 mb-2">
+            <button class="side-btn btn-sm" id="filterMajorsBtn"><i class="bi bi-exclamation-octagon"></i> Majors</button>
+            <button class="side-btn btn-sm" id="filterErrorsBtn"><i class="bi bi-bug"></i> Errors</button>
+            <button class="side-btn btn-sm" id="expandAllBtn"><i class="bi bi-arrows-expand"></i> Expand</button>
+            <button class="side-btn btn-sm" id="collapseAllBtn"><i class="bi bi-arrows-collapse"></i> Collapse</button>
+          </div>
+
+          <div id="aggregateBlock" class="panel-2 p-2 mb-2 d-none">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <span class="chip major">Major <span id="aggMajor">0</span></span>
+              <span class="chip minor">Minor <span id="aggMinor">0</span></span>
+              <span class="chip clar">Clar <span id="aggClar">0</span></span>
+            </div>
+            <div class="progress" title="Percent major across all items">
+              <div class="progress-bar" id="aggBar" style="width:0%"></div>
+            </div>
+          </div>
+
+          <div id="caseNav" class="case-nav small"></div>
+
+          <div class="mt-3 small text-secondary">
+            <div><span class="kbd">J</span>/<span class="kbd">K</span> next/prev</div>
+            <div><span class="kbd">1–4</span> tabs</div>
+            <div><span class="kbd">F</span> focus search</div>
+            <div><span class="kbd">S</span> cycle sort</div>
+            <div><span class="kbd">G</span><span class="mx-1">G</span> top</div>
+          </div>
         </div>
       </div>
 
-      <!-- Main content -->
+      <!-- Main content with right border & wrapping -->
       <div>
         <div id="resultsPanel" class="panel p-2">
           <div id="emptyState" class="text-center text-secondary p-5">
@@ -706,10 +772,16 @@ Attending Report:
     const aggBar = document.getElementById('aggBar');
 
     const gridLayout = document.getElementById('gridLayout');
-    const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
 
+    // Full sidebar controls
+    const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
     const sortBtn = document.getElementById('sortCaseBtn');
     const sortModeLabel = document.getElementById('sortModeLabel');
+
+    // Rail controls (collapsed)
+    const toggleSidebarBtnRail = document.getElementById('toggleSidebarBtnRail');
+    const sortBtnRail = document.getElementById('sortCaseBtnRail');
+
     const sortModes = ['number','change','score'];
     const sortLabels = { number: 'Case #', change: 'Δ Change', score: 'Score' };
     const sortIcons = {
@@ -730,56 +802,58 @@ Attending Report:
       setTimeout(()=>{ toaster.style.display = 'none'; }, ms);
     }
 
-    // ---------- Sidebar collapse ----------
-    toggleSidebarBtn.addEventListener('click', () => {
-      const pressed = toggleSidebarBtn.getAttribute('aria-pressed') === 'true';
-      toggleSidebarBtn.setAttribute('aria-pressed', String(!pressed));
-      gridLayout.classList.toggle('collapsed', !pressed === true);
-      toggleSidebarBtn.innerHTML = (pressed)
-        ? '<i class="bi bi-layout-sidebar-inset me-1"></i> Case List'
-        : '<i class="bi bi-layout-sidebar-inset-reverse me-1"></i> Case List';
-    });
+    // ---------- Sidebar collapse/expand ----------
+    function setCollapsed(collapsed){
+      gridLayout.classList.toggle('collapsed', collapsed);
+      toggleSidebarBtn.setAttribute('aria-pressed', String(collapsed));
+      toggleSidebarBtnRail.setAttribute('aria-pressed', String(!collapsed));
+    }
+    toggleSidebarBtn.addEventListener('click', () => setCollapsed(true));
+    toggleSidebarBtnRail.addEventListener('click', () => setCollapsed(false));
 
-    // ---------- Sort button visual state ----------
+    // ---------- Sort button visual state (sync full + rail) ----------
     function applySortVisual(mode) {
+      // full button
       sortBtn.setAttribute('data-mode', mode);
-      sortModeLabel.textContent = sortLabels[mode];
       sortBtn.classList.add('active');
-      // swap icon
       sortBtn.innerHTML = '<i class="bi '+sortIcons[mode]+' me-1"></i> Sort: <span class="mode" id="sortModeLabel">'+sortLabels[mode]+'</span>';
+      // rail button
+      sortBtnRail.setAttribute('data-mode', mode);
+      sortBtnRail.innerHTML = '<i class="bi '+sortIcons[mode]+'"></i>';
     }
 
+    function cycleSort(currentMode){
+      const idx = sortModes.indexOf(currentMode);
+      const next = sortModes[(idx+1)%sortModes.length];
+      sortBy(next);
+      applySortVisual(next);
+      renderAll(caseData);
+    }
+
+    sortBtn.addEventListener('click', () => {
+      const current = sortBtn.getAttribute('data-mode') || 'number';
+      cycleSort(current);
+    });
+    sortBtnRail.addEventListener('click', () => {
+      const current = sortBtnRail.getAttribute('data-mode') || 'number';
+      cycleSort(current);
+    });
+
     // ---------- Navigation render ----------
-    function formatChipCounts(s) {
-      const majors = (s?.major_findings?.length)||0;
-      const minors = (s?.minor_findings?.length)||0;
-      const clar = (s?.clarifications?.length)||0;
+    function formatNavRow(c) {
+      const score = (c.summary && c.summary.score) || 0;
       return `
-        <span class="chip major">M ${majors}</span>
-        <span class="chip minor">m ${minors}</span>
-        <span class="chip clar">c ${clar}</span>
+        <a href="#case${c.case_num}">
+          <div class="me-auto">
+            <div><strong>#${c.case_num}</strong></div>
+            <div class="meta">Δ ${c.percentage_change}% • Score ${score}</div>
+          </div>
+        </a>
       `;
     }
 
     function renderNav(list) {
-      navEl.innerHTML = '';
-      list.forEach(c => {
-        const score = (c.summary && c.summary.score) || 0;
-        const a = document.createElement('a');
-        a.href = '#case' + c.case_num;
-        a.className = 'd-block rounded mb-1 px-2 py-1';
-        a.innerHTML = `
-          <div class="d-flex w-100 align-items-center">
-            <div class="me-auto">
-              <strong>Case ${c.case_num}</strong>
-              <div class="small text-secondary">Δ ${c.percentage_change}%</div>
-            </div>
-            <span class="badge badge-score me-2">Score ${score}</span>
-            <div class="d-none d-xl-block">${formatChipCounts(c.summary)}</div>
-          </div>
-        `;
-        navEl.appendChild(a);
-      });
+      navEl.innerHTML = list.map(formatNavRow).join('');
       caseCountBadge.textContent = list.length;
     }
 
@@ -957,8 +1031,8 @@ Attending Report:
       if (caseData && caseData.length) {
         renderAll(caseData);
       }
-      // initialize sort visual
-      applySortVisual('number');
+      applySortVisual('number'); // initialize sort visual
+      setCollapsed(false);       // start expanded
     });
 
     document.getElementById('reportForm').addEventListener('submit', () => {
@@ -997,15 +1071,6 @@ No pulmonary embolism.`;
       renderAll(list);
     });
 
-    sortBtn.addEventListener('click', (e) => {
-      const current = sortBtn.getAttribute('data-mode');
-      const idx = sortModes.indexOf(current);
-      const next = sortModes[(idx+1)%sortModes.length];
-      sortBy(next);
-      applySortVisual(next);
-      renderAll(caseData);
-    });
-
     document.getElementById('filterMajorsBtn').addEventListener('click', () => {
       const filtered = filterMajorsOnly(caseData);
       renderAll(filtered);
@@ -1034,6 +1099,7 @@ No pulmonary embolism.`;
       URL.revokeObjectURL(url);
     });
 
+    // ---------- Utils ----------
     function toggleCollapse(id) {
       const el = document.getElementById('body'+id);
       if (!el) return;
@@ -1041,7 +1107,6 @@ No pulmonary embolism.`;
     }
     window.toggleCollapse = toggleCollapse;
 
-    // ---------- Utils ----------
     function copyJSON(text) {
       navigator.clipboard.writeText(JSON.parse(text))
         .then(()=> toast('JSON copied'))
@@ -1090,7 +1155,9 @@ No pulmonary embolism.`;
       } else if (e.key.toLowerCase()==='f') {
         e.preventDefault(); document.getElementById('searchInput').focus();
       } else if (e.key.toLowerCase()==='s') {
-        e.preventDefault(); sortBtn.click();
+        e.preventDefault();
+        // trigger whichever sort control is visible
+        if (gridLayout.classList.contains('collapsed')) sortBtnRail.click(); else sortBtn.click();
       } else if (e.key.toLowerCase()==='g') {
         if (gPressedOnce) {
           window.scrollTo({top:0, behavior:'smooth'}); gPressedOnce=false;
