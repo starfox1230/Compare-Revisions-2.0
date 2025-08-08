@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 # --------------------------- Logging ---------------------------------
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO, # Changed to INFO for production, DEBUG is too verbose
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     handlers=[logging.StreamHandler()]
 )
@@ -23,46 +23,45 @@ logger.info(f"API key present: {bool(os.getenv('OPENAI_API_KEY'))}")
 
 # --------------------------- OpenAI ----------------------------------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-MODEL_ID = os.getenv("MODEL_ID", "gpt-5-mini")  # you can set MODEL_ID in Render to flip models
+MODEL_ID = os.getenv("MODEL_ID", "gpt-4-turbo") # Updated default model
 
 # ----------------------- Tool Definition -----------------------------
-# Define the tool that represents our desired JSON output structure.
 RADIOLOGY_SUMMARY_TOOL = [
     {
         "type": "function",
-        "name": "summarize_radiology_report",
-        "description": "Summarizes the differences between a resident and attending radiology report, categorizing findings and calculating a score.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "case_number": {
-                    "type": "string",
-                    "description": "The case number being analyzed."
+        "function": {
+            "name": "summarize_radiology_report",
+            "description": "Summarizes the differences between a resident and attending radiology report, categorizing findings and calculating a score.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "case_number": {
+                        "type": "string",
+                        "description": "The case number being analyzed."
+                    },
+                    "major_findings": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "A list of major, management-changing findings identified by the attending but missed by the resident."
+                    },
+                    "minor_findings": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "A list of minor, clinically relevant but not urgent findings."
+                    },
+                    "clarifications": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "A list of wording changes, formatting corrections, or minor descriptor edits with no management change."
+                    },
+                    "score": {
+                        "type": "integer",
+                        "description": "A calculated score based on the findings: 3 points for each major finding and 1 point for each minor finding."
+                    }
                 },
-                "major_findings": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "A list of major, management-changing findings identified by the attending but missed by the resident."
-                },
-                "minor_findings": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "A list of minor, clinically relevant but not urgent findings."
-                },
-                "clarifications": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "A list of wording changes, formatting corrections, or minor descriptor edits with no management change."
-                },
-                "score": {
-                    "type": "integer",
-                    "description": "A calculated score based on the findings: 3 points for each major finding and 1 point for each minor finding."
-                }
-            },
-            "required": ["case_number", "major_findings", "minor_findings", "clarifications", "score"],
-            "additionalProperties": False
-        },
-        "strict": True
+                "required": ["case_number", "major_findings", "minor_findings", "clarifications", "score"]
+            }
+        }
     }
 ]
 
@@ -298,7 +297,7 @@ Example 9 — Threshold crossing (upgrade to MINOR):
 Resident: “Pulmonary nodule 5 mm.”
 Attending: “Pulmonary nodule 8 mm (follow-up recommended).”
 → major: []
-→ minor: ["Pulmonary nodule 8 mm (descriptor: size; threshold crossed; follow-up impact)"]
+- minor: ["Pulmonary nodule 8 mm (descriptor: size; threshold crossed; follow-up impact)"]
 → clarifications: []
 → score: 1
 
@@ -328,27 +327,29 @@ Attending: “Sigmoid diverticulitis with trace adjacent fluid; no abscess.”
 
 </examples>
 """
-
 # --------------------------- Helpers ---------------------------------
 def normalize_text(text):
     return "\n".join([line.strip() for line in text.splitlines() if line.strip()])
 
 def remove_attending_review_line(text):
-    excluded_lines = [
-        "As the attending physician, I have personally reviewed the images, interpreted and/or supervised the study or procedure, and agree with the wording of the above report.",
-        "As the Attending radiologist, I have personally reviewed the images, interpreted the study, and agree with the wording of the above report by Sterling M. Jones"
-    ]
-    return "\n".join([line for line in text.splitlines() if line.strip() not in excluded_lines])
+    # This regex is more robust to slight variations in the boilerplate.
+    pattern = r"(?i)As the attending.*I have personally reviewed.*and agree with the wording.*"
+    return re.sub(pattern, "", text, flags=re.MULTILINE)
 
 def calculate_change_percentage(resident_text, attending_text):
     matcher = difflib.SequenceMatcher(None, resident_text.split(), attending_text.split())
-    return round((1 - matcher.ratio()) * 100, 2)
+    return round((1 - matcher.ratio()) * 100, 1) # Rounded to 1 decimal place
 
 def split_into_paragraphs(text):
-    paragraphs = re.split(r'\n{2,}|\n(?=\w)', text)
+    # Split by one or more newlines, which is more robust for report formatting
+    paragraphs = re.split(r'\n+', text)
     return [para.strip() for para in paragraphs if para.strip()]
 
 def create_diff_by_section(resident_text, attending_text):
+    """
+    MODERNIZED: This function now uses CSS classes instead of inline styles for a cleaner
+    separation of concerns and easier styling in the frontend.
+    """
     resident_text = normalize_text(resident_text)
     attending_text = normalize_text(remove_attending_review_line(attending_text))
     resident_paragraphs = split_into_paragraphs(resident_text)
@@ -356,73 +357,58 @@ def create_diff_by_section(resident_text, attending_text):
 
     diff_html = ""
     matcher = difflib.SequenceMatcher(None, resident_paragraphs, attending_paragraphs)
+
     for opcode, a1, a2, b1, b2 in matcher.get_opcodes():
         if opcode == 'equal':
             for paragraph in resident_paragraphs[a1:a2]:
-                diff_html += paragraph + "<br><br>"
+                diff_html += f"<p>{paragraph}</p>"
         elif opcode == 'insert':
             for paragraph in attending_paragraphs[b1:b2]:
-                diff_html += f'<div style="color:lightgreen;">[Inserted: {paragraph}]</div><br><br>'
+                diff_html += f'<div class="diff-para-insert"><span class="diff-marker">+</span><p>{paragraph}</p></div>'
         elif opcode == 'delete':
             for paragraph in resident_paragraphs[a1:a2]:
-                diff_html += f'<div style="color:#ff6b6b;text-decoration:line-through;">[Deleted: {paragraph}]</div><br><br>'
+                diff_html += f'<div class="diff-para-delete"><span class="diff-marker">-</span><p>{paragraph}</p></div>'
         elif opcode == 'replace':
-            res_paragraphs = resident_paragraphs[a1:a2]
-            att_paragraphs = attending_paragraphs[b1:b2]
-            for res_paragraph, att_paragraph in zip(res_paragraphs, att_paragraphs):
-                word_matcher = difflib.SequenceMatcher(None, res_paragraph.split(), att_paragraph.split())
-                for word_opcode, w_a1, w_a2, w_b1, w_b2 in word_matcher.get_opcodes():
-                    if word_opcode == 'equal':
-                        diff_html += " ".join(res_paragraph.split()[w_a1:w_a2]) + " "
-                    elif word_opcode == 'replace':
-                        diff_html += (
-                            '<span style="color:#ff6b6b;text-decoration:line-through;">' +
-                            " ".join(res_paragraph.split()[w_a1:w_a2]) +
-                            '</span> <span style="color:lightgreen;">' +
-                            " ".join(att_paragraph.split()[w_b1:w_b2]) +
-                            '</span> '
-                        )
-                    elif word_opcode == 'delete':
-                        diff_html += (
-                            '<span style="color:#ff6b6b;text-decoration:line-through;">' +
-                            " ".join(res_paragraph.split()[w_a1:w_a2]) +
-                            '</span> '
-                        )
-                    elif word_opcode == 'insert':
-                        diff_html += (
-                            '<span style="color:lightgreen;">' +
-                            " ".join(att_paragraph.split()[w_b1:w_b2]) +
-                            '</span> '
-                        )
-                diff_html += "<br><br>"
+            res_paragraphs = " ".join(resident_paragraphs[a1:a2])
+            att_paragraphs = " ".join(attending_paragraphs[b1:b2])
+            
+            # Using a simpler line-by-line diff for replaced paragraphs for clarity
+            s = difflib.SequenceMatcher(None, res_paragraphs.split(), att_paragraphs.split())
+            replaced_html = ""
+            for op, i1, i2, j1, j2 in s.get_opcodes():
+                if op == 'equal':
+                    replaced_html += " ".join(att_paragraphs.split()[j1:j2]) + " "
+                elif op == 'delete':
+                    replaced_html += "<del>" + " ".join(res_paragraphs.split()[i1:i2]) + "</del> "
+                elif op == 'insert':
+                    replaced_html += "<ins>" + " ".join(att_paragraphs.split()[j1:j2]) + "</ins> "
+                elif op == 'replace':
+                    replaced_html += "<del>" + " ".join(res_paragraphs.split()[i1:i2]) + "</del> "
+                    replaced_html += "<ins>" + " ".join(att_paragraphs.split()[j1:j2]) + "</ins> "
+
+            diff_html += f'<div class="diff-para-replace"><p>{replaced_html}</p></div>'
     return diff_html
 
 # ------------------------- OpenAI call --------------------------------
 def get_summary(case_text, custom_prompt, case_number):
     try:
         logger.info(f"Processing case {case_number} with model={MODEL_ID} using function calling.")
-
-        response = client.responses.create(
+        
+        # Updated to use the chat completions endpoint which is standard now
+        response = client.chat.completions.create(
             model=MODEL_ID,
-            instructions=custom_prompt,
-            input=(
-                f"Case Number: {case_number}\n{case_text}"
-            ),
+            messages=[
+                {"role": "system", "content": custom_prompt},
+                {"role": "user", "content": f"Case Number: {case_number}\n{case_text}"}
+            ],
             tools=RADIOLOGY_SUMMARY_TOOL,
-            # Force the model to call our specific function
-            tool_choice={"type": "function", "name": "summarize_radiology_report"}
+            tool_choice={"type": "function", "function": {"name": "summarize_radiology_report"}}
         )
 
-        # Extract the function call arguments from the response
-        parsed_json = None
-        raw_arguments = ""
-        for item in response.output:
-            if item.type == "function_call" and item.name == "summarize_radiology_report":
-                raw_arguments = item.arguments
-                parsed_json = json.loads(raw_arguments)
-                break  # Stop after finding the first one
-
-        if parsed_json:
+        tool_calls = response.choices[0].message.tool_calls
+        if tool_calls and tool_calls[0].function.name == "summarize_radiology_report":
+            raw_arguments = tool_calls[0].function.arguments
+            parsed_json = json.loads(raw_arguments)
             logger.info(f"Received and parsed function call for case {case_number}: OK")
             return parsed_json
         else:
@@ -433,24 +419,9 @@ def get_summary(case_text, custom_prompt, case_number):
         logger.error(f"JSON parse failure for case {case_number}: {e!r}")
         logger.debug(f"Raw arguments from model that failed to parse: {raw_arguments}")
         return {"case_number": case_number, "error": "Invalid JSON in tool arguments from AI."}
-    except NotFoundError as e:
-        logger.error(f"[404] NotFound: {e.message}")
-        return {"case_number": case_number, "error": f"404 NotFound: {e.message}. Check model id / project key."}
-    except BadRequestError as e:
-        logger.error(f"[400] BadRequest: {e.message}")
-        return {"case_number": case_number, "error": f"400 BadRequest: {e.message}"}
-    except AuthenticationError as e:
-        logger.error(f"[401] AuthError: {e.message}")
-        return {"case_number": case_number, "error": "401 Unauthorized: check OPENAI_API_KEY"}
-    except RateLimitError as e:
-        logger.error(f"[429] RateLimit: {e.message}")
-        return {"case_number": case_number, "error": "429 Rate limited"}
-    except APIConnectionError as e:
-        logger.error(f"[NET] APIConnectionError: {e.message}")
-        return {"case_number": case_number, "error": "Network error"}
-    except APIError as e:
-        logger.error(f"[5xx] APIError: {e.message}")
-        return {"case_number": case_number, "error": "Server error"}
+    except (NotFoundError, BadRequestError, AuthenticationError, RateLimitError, APIConnectionError, APIError) as e:
+        logger.error(f"API Error processing case {case_number}: {type(e).__name__} - {e}")
+        return {"case_number": case_number, "error": f"API Error: {type(e).__name__}"}
     except Exception as e:
         logger.error(f"Unhandled error for case {case_number}: {repr(e)}")
         return {"case_number": case_number, "error": f"Unhandled: {repr(e)}"}
@@ -469,9 +440,10 @@ def process_cases(cases_data, custom_prompt, max_workers=8):
             case_num = future_to_case[future]
             try:
                 parsed_json = future.result() or {}
-                # Ensure score exists, calculating it if necessary, but respecting AI-provided score
+                # Ensure score exists, calculating it if necessary
                 if 'score' not in parsed_json:
-                    parsed_json['score'] = len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', []))
+                    parsed_json['score'] = (len(parsed_json.get('major_findings', [])) * 3 + 
+                                            len(parsed_json.get('minor_findings', [])))
                 logger.info(f"Processed summary for case {case_num}: Score {parsed_json.get('score', 'N/A')}")
             except Exception as e:
                 logger.error(f"Error processing case {case_num}: {e}")
@@ -482,83 +454,71 @@ def process_cases(cases_data, custom_prompt, max_workers=8):
 
 def extract_cases(text, custom_prompt):
     text = text.replace('\r\n', '\n').replace('\r', '\n')
-    logger.debug("Normalized line endings.")
-
-    cases = re.split(r'(?m)^Case\s+(\d+)', text, flags=re.IGNORECASE)
-    logger.debug(f"SPLIT RESULT FOR CASES: {cases}")
-
-    logger.info(f"Total elements after split: {len(cases)}")
-    for idx, element in enumerate(cases):
-        logger.debug(f"Element {idx}: {element[:100]}{'...' if len(element) > 100 else ''}")
+    # More robust regex to find 'Case' followed by a number, even with noise.
+    cases = re.split(r'(?i)\bCase\s+([a-zA-Z0-9\-]+)', text)
 
     cases_data, parsed_cases = [], []
+    if len(cases) < 2: # No cases found
+        logger.warning("No cases found matching the 'Case [number]' pattern.")
+        return []
 
+    # The first element is text before the first "Case", so we skip it.
     for i in range(1, len(cases), 2):
-        case_num = cases[i]
-        case_content = cases[i + 1].strip() if i + 1 < len(cases) else ""
-        logger.debug(f"Processing Case {case_num}:")
-        logger.debug(f"Case Content: {case_content[:200]}{'...' if len(case_content) > 200 else ''}")
+        case_num = cases[i].strip()
+        case_content = cases[i + 1].strip() if (i + 1) < len(cases) else ""
+        
+        # Regex to find resident/attending blocks, ignoring case and looking for a colon
+        resident_match = re.search(r'(?i)Resident Report\s*:(.*)', case_content, re.DOTALL)
+        attending_match = re.search(r'(?i)Attending Report\s*:(.*)', case_content, re.DOTALL)
 
-        regex = r'(?im)^\s*(Attending(?:\s+Report)?\s*:|Resident(?:\s+Report)?\s*:)'
-        parts = re.split(regex, case_content)
-        logger.debug(f"Reports split: {parts}")
-
-        label_to_text = {}
-        for j in range(1, len(parts), 2):
-            label_raw = (parts[j] or "").strip().lower().replace(":", "")
-            content = (parts[j+1] if j+1 < len(parts) else "").strip()
-            if "attending" in label_raw:
-                label_to_text["attending"] = content
-            elif "resident" in label_raw:
-                label_to_text["resident"] = content
-
-        resident_report = label_to_text.get("resident", "")
-        attending_report = label_to_text.get("attending", "")
+        # To ensure we capture the right text, we can split based on the next label
+        resident_report = ""
+        if resident_match:
+            if attending_match and resident_match.start() < attending_match.start():
+                 resident_report = case_content[resident_match.end():attending_match.start()].strip()
+            else:
+                 resident_report = resident_match.group(1).strip()
+        
+        attending_report = attending_match.group(1).strip() if attending_match else ""
 
         if resident_report and attending_report:
             case_text = (
-                f"Resident Report: {normalize_text(resident_report)}\n"
+                f"Resident Report: {normalize_text(resident_report)}\n\n"
                 f"Attending Report: {normalize_text(attending_report)}"
             )
             cases_data.append((case_text, case_num))
-            logger.info(f"Prepared case {case_num} (normalized order: Resident → Attending).")
+            logger.info(f"Prepared case {case_num} for processing.")
         else:
-            logger.warning(f"Case {case_num} does not contain both Attending and Resident Reports.")
+            logger.warning(f"Case {case_num} is missing a clearly labeled Resident or Attending report. Skipping.")
 
     if not cases_data:
-        logger.warning("No valid cases found in the submitted text.")
-        return parsed_cases
+        return []
 
     ai_summaries = process_cases(cases_data, custom_prompt, max_workers=8)
-
     summaries_by_case_num = {str(s.get('case_number')): s for s in ai_summaries}
 
     for case_text, case_num in cases_data:
         try:
-            resident_report = case_text.split("\nAttending Report:")[0].replace("Resident Report: ", "").strip()
-            attending_report = case_text.split("\nAttending Report:")[1].strip()
+            # Extract reports again for diff generation
+            resident_report_raw = re.search(r"Resident Report:(.*)Attending Report:", case_text, re.S | re.I).group(1).strip()
+            attending_report_raw = re.search(r"Attending Report:(.*)", case_text, re.S | re.I).group(1).strip()
 
             ai_summary = summaries_by_case_num.get(case_num, {})
-
+            
             parsed_cases.append({
                 'case_num': case_num,
-                'resident_report': resident_report,
-                'attending_report': attending_report,
-                'percentage_change': calculate_change_percentage(resident_report, remove_attending_review_line(attending_report)),
-                'diff': create_diff_by_section(resident_report, attending_report),
-                # *** BUG FIX: Assign the correct summary to each case ***
+                'resident_report': resident_report_raw,
+                'attending_report': attending_report_raw,
+                'percentage_change': calculate_change_percentage(resident_report_raw, remove_attending_review_line(attending_report_raw)),
+                'diff': create_diff_by_section(resident_report_raw, attending_report_raw),
                 'summary': ai_summary if 'error' not in ai_summary else None,
                 'summary_error': ai_summary.get('error')
             })
-            logger.info(f"Assigned summary to case {case_num}.")
-        except IndexError:
-            logger.error(f"Error parsing reports for case {case_num}.")
+        except Exception as e:
+            logger.error(f"Error during final parsing for case {case_num}: {e}")
             continue
-
-    logger.info(f"Total parsed_cases to return: {len(parsed_cases)}")
-    logger.debug(f"Parsed_cases: {json.dumps(parsed_cases, indent=2)}")
+            
     return parsed_cases
-
 # ---------------------------- Web -------------------------------------
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -567,221 +527,278 @@ def index():
 
     if request.method == 'POST':
         text_block = request.form['report_text']
-        if not text_block.strip():
-            logger.warning("No report text provided.")
-        else:
-            logger.info("Starting case extraction and processing.")
+        if text_block.strip():
             case_data = extract_cases(text_block, custom_prompt)
-            logger.info(f"Completed case extraction and processing. Number of cases extracted: {len(case_data)}")
-            logger.debug(f"Extracted case_data: {json.dumps(case_data, indent=2)}")
 
-    logger.info(f"Passing {len(case_data)} cases to the template.")
-    logger.debug(f"case_data being passed: {json.dumps(case_data, indent=2)}")
-
+    # MODERNIZED TEMPLATE
     template = """
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-    <title>Radiology Report Diff & Summarizer</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Radiology Report Review Hub</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://unpkg.com/@dotlottie/player-component@2.7.12/dist/dotlottie-player.mjs" type="module"></script>
     <style>
-        body { background-color: #1e1e1e; color: #dcdcdc; font-family: Arial, sans-serif; }
-        textarea, input, button { background-color: #333333; color: #dcdcdc; border: 1px solid #555; }
-        textarea { background-color: #333333 !important; color: #dcdcdc !important; border: 1px solid #555 !important; }
-        h2, h3, h4 { color: #f0f0f0; font-weight: normal; }
-        .diff-output, .summary-output { margin-top: 20px; padding: 15px; background-color: #2e2e2e; border-radius: 8px; border: 1px solid #555; }
-        pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; }
-        .nav-tabs .nav-link { background-color: #333; border-color: #555; color: #dcdcdc; }
-        .nav-tabs .nav-link.active { background-color: #007bff; border-color: #007bff #007bff #333; color: white; }
-        #scrollToTopBtn { position: fixed; right: 20px; bottom: 20px; background-color: #007bff; color: white; padding: 10px 15px; border-radius: 15px; border: none; cursor: pointer; z-index: 1000; }
-        #scrollToTopBtn:hover { background-color: #0056b3; }
-        a { color: #66ccff; text-decoration: none; } a:hover { color: #99e6ff; text-decoration: none; }
-        #loadingAnimation { display: none; margin-top: 20px; }
+        :root {
+            --bg-color: #1a1b26; --surface-color: #24283b; --card-color: #2a2f4a;
+            --text-color: #c0caf5; --primary-color: #7aa2f7; --green: #9ece6a;
+            --red: #f7768e; --orange: #ff9e64; --border-color: #414868;
+        }
+        body { background-color: var(--bg-color); color: var(--text-color); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+        .page-wrapper { display: grid; grid-template-columns: 320px 1fr; gap: 2rem; padding: 2rem; max-width: 1800px; margin: auto; }
+        .sidebar { background-color: var(--surface-color); padding: 1.5rem; border-radius: 12px; height: calc(100vh - 4rem); position: sticky; top: 2rem; overflow-y: auto; }
+        .sidebar h2 { font-size: 1.2rem; font-weight: bold; color: var(--primary-color); border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; margin-top: 1.5rem; }
+        .main-content { min-width: 0; } /* Prevents overflow */
+        .form-control, .form-select { background-color: var(--card-color); color: var(--text-color); border: 1px solid var(--border-color); }
+        .form-control:focus, .form-select:focus { background-color: var(--card-color); color: var(--text-color); border-color: var(--primary-color); box-shadow: 0 0 0 0.25rem rgba(122, 162, 247, 0.25); }
+        .btn-primary { background-color: var(--primary-color); border: none; }
+        .btn-primary:hover { background-color: #5a7fcf; }
+        #loading-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 1056; flex-direction: column; justify-content: center; align-items: center; }
+        #loading-overlay p { font-size: 1.2rem; margin-top: 1rem; }
+        .case-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; margin-bottom: 1.5rem; overflow: hidden; }
+        .case-header { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1.25rem; background-color: var(--surface-color); border-bottom: 1px solid var(--border-color); }
+        .case-header h4 { margin: 0; font-size: 1.2rem; font-weight: bold; }
+        .case-badge { font-size: 0.9rem; padding: 0.3rem 0.6rem; border-radius: 6px; }
+        .nav-tabs .nav-link { background: none; border: none; color: var(--text-color); opacity: 0.7; }
+        .nav-tabs .nav-link.active { color: var(--primary-color); opacity: 1; border-bottom: 2px solid var(--primary-color); }
+        .tab-content { padding: 1.25rem; }
+        .report-content, .diff-output { white-space: pre-wrap; word-wrap: break-word; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.9rem; background-color: var(--bg-color); padding: 1rem; border-radius: 8px; }
+        .summary-list { list-style-type: none; padding-left: 0; }
+        .summary-list li { padding: 0.5rem; border-left: 3px solid var(--border-color); margin-bottom: 0.5rem; background-color: rgba(0,0,0,0.1); }
+        .summary-list .major { border-color: var(--red); }
+        .summary-list .minor { border-color: var(--orange); }
+        .summary-list .clarification { border-color: var(--green); }
+        .diff-output del { background-color: rgba(247, 118, 142, 0.2); color: #f7768e; text-decoration: none; }
+        .diff-output ins { background-color: rgba(158, 206, 106, 0.2); color: #9ece6a; text-decoration: none; }
+        .sidebar-nav-list { list-style: none; padding: 0; }
+        .sidebar-nav-list li a { display: block; padding: 0.5rem 0.75rem; border-radius: 6px; text-decoration: none; color: var(--text-color); transition: background-color 0.2s; }
+        .sidebar-nav-list li a:hover { background-color: var(--card-color); }
+        .sidebar-nav-list li a.has-major { border-left: 3px solid var(--red); }
+        .stat-card { background-color: var(--card-color); padding: 0.75rem; border-radius: 8px; text-align: center; }
+        .stat-value { font-size: 1.75rem; font-weight: bold; color: var(--primary-color); }
+        .stat-label { font-size: 0.8rem; opacity: 0.8; }
+        #top-summary-findings { max-height: 250px; overflow-y: auto; background: var(--surface-color); padding: 1rem; border-radius: 8px; }
     </style>
 </head>
 <body>
-<div class="container">
-    <h2 class="mt-4">Compare Revisions & Summarize Reports</h2>
-    <form method="POST" id="reportForm">
-        <div class="form-group mb-3">
-            <label for="report_text">Paste your reports block here:</label>
-            <textarea id="report_text" name="report_text" class="form-control" rows="10">{{ request.form.get('report_text', '') }}</textarea>
-        </div>
-        <div class="form-group mb-3">
-            <label for="custom_prompt">Customize your OpenAI API prompt:</label>
-            <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="5">{{ custom_prompt }}</textarea>
-        </div>
-        <button type="submit" class="btn btn-primary">Compare & Summarize Reports</button>
-        <dotlottie-player id="loadingAnimation" src="https://lottie.host/817661a8-2608-4435-89a5-daa620a64c36/WtsFI5zdEK.lottie" background="transparent" speed="1" style="width: 300px; height: 300px;" loop autoplay></dotlottie-player>
-    </form>
-
-    {% if case_data %}
-        <h3 id="majorFindings">Major Findings Missed</h3>
-        <ul>
-            {% for case in case_data %}
-                {% if case.summary and case.summary.major_findings %}
-                    {% for finding in case.summary.major_findings %}
-                        <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
-                    {% endfor %}
-                {% endif %}
-            {% endfor %}
-        </ul>
-
-        <h3>Minor Findings Missed</h3>
-        <ul>
-            {% for case in case_data %}
-                {% if case.summary and case.summary.minor_findings %}
-                    {% for finding in case.summary.minor_findings %}
-                        <li><a href="#case{{ case.case_num }}">Case {{ case.case_num }}</a>: {{ finding }}</li>
-                    {% endfor %}
-                {% endif %}
-            {% endfor %}
-        </ul>
-
-        <h3>Case Navigation</h3>
-    {% endif %}
-
-    <div class="btn-group" role="group" aria-label="Sort Options">
-        <button type="button" class="btn btn-secondary" onclick="sortCases('case_number')">Sort by Case Number</button>
-        <button type="button" class="btn btn-secondary" onclick="sortCases('percentage_change')">Sort by Percentage Change</button>
-        <button type="button" class="btn btn-secondary" onclick="sortCases('summary_score')">Sort by Summary Score</button>
+    <div id="loading-overlay">
+        <dotlottie-player src="https://lottie.host/817661a8-2608-4435-89a5-daa620a64c36/WtsFI5zdEK.lottie" background="transparent" speed="1" style="width: 250px; height: 250px;" loop autoplay></dotlottie-player>
+        <p>Analyzing reports... this may take a moment.</p>
     </div>
 
-    <ul id="caseNav"></ul>
-    <div id="caseContainer"></div>
-</div>
+    <div class="page-wrapper">
+        <aside class="sidebar">
+            <h1 class="h4 mb-4">Radiology Review Hub</h1>
+            
+            <h2>Dashboard</h2>
+            <div id="dashboard-stats" class="row gx-2 gy-2 mt-2"></div>
 
-<button id="scrollToTopBtn" onclick="scrollToTop()">Top ⬆</button>
+            <h2>Controls</h2>
+            <div class="mt-2">
+                <label for="sort-select" class="form-label">Sort Cases By</label>
+                <select id="sort-select" class="form-select">
+                    <option value="case_num">Case Number</option>
+                    <option value="score">Discrepancy Score</option>
+                    <option value="percentage_change">Percent Change</option>
+                </select>
+                <label for="filter-select" class="form-label mt-3">Filter Cases</label>
+                <select id="filter-select" class="form-select">
+                    <option value="all">Show All</option>
+                    <option value="major">With Major Findings</option>
+                    <option value="minor">With Minor Findings</option>
+                    <option value="errors">With Errors</option>
+                </select>
+            </div>
+            
+            <h2>Navigation</h2>
+            <nav id="case-nav-sidebar" class="mt-2">
+                <ul id="case-nav-list" class="sidebar-nav-list"></ul>
+            </nav>
+        </aside>
+
+        <main class="main-content">
+            <form method="POST" id="reportForm">
+                <div class="form-group mb-3">
+                    <label for="report_text" class="form-label">Paste reports block here (each must start with "Case [number]"):</label>
+                    <textarea id="report_text" name="report_text" class="form-control" rows="10">{{ request.form.get('report_text', '') }}</textarea>
+                </div>
+                <div class="form-group mb-3">
+                    <label for="custom_prompt" class="form-label">System Prompt (Advanced)</label>
+                    <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="5">{{ custom_prompt }}</textarea>
+                </div>
+                <button type="submit" class="btn btn-primary">Analyze & Review</button>
+            </form>
+            
+            <div id="results-area" class="mt-4" style="display: none;">
+                <hr class="my-4">
+                <div id="top-summary-findings"></div>
+                <div id="case-container" class="mt-4"></div>
+            </div>
+        </main>
+    </div>
 
 <script>
-    let caseData = {{ case_data | tojson }};
-    console.log("Received caseData:", caseData);
+    let masterCaseData = {{ case_data | tojson }};
+    let displayCaseData = [];
 
-    function sortCases(option) {
-        console.log("Sorting cases by:", option);
-        if (option === "case_number") {
-            caseData.sort((a, b) => parseInt(a.case_num) - parseInt(b.case_num));
-        } else if (option === "percentage_change") {
-            caseData.sort((a, b) => b.percentage_change - a.percentage_change);
-        } else if (option === "summary_score") {
-            caseData.sort((a, b) => (b.summary && b.summary.score || 0) - (a.summary && a.summary.score || 0));
+    function updateView() {
+        applyFilters();
+        applySorting();
+        renderDashboard();
+        renderSidebarNav();
+        renderCases();
+        renderTopFindings();
+    }
+    
+    function applyFilters() {
+        const filterValue = document.getElementById('filter-select').value;
+        if (filterValue === 'all') {
+            displayCaseData = [...masterCaseData];
+        } else if (filterValue === 'major') {
+            displayCaseData = masterCaseData.filter(c => c.summary && c.summary.major_findings && c.summary.major_findings.length > 0);
+        } else if (filterValue === 'minor') {
+            displayCaseData = masterCaseData.filter(c => c.summary && c.summary.minor_findings && c.summary.minor_findings.length > 0);
+        } else if (filterValue === 'errors') {
+            displayCaseData = masterCaseData.filter(c => !!c.summary_error);
         }
-        console.log("Sorted caseData:", caseData);
-        displayCases();
-        displayNavigation();
     }
 
-    function displayNavigation() {
-        const nav = document.getElementById('caseNav');
-        if (!nav) { console.error("Element with id 'caseNav' not found."); return; }
-        nav.innerHTML = '';
-        if (caseData.length === 0) {
-            nav.innerHTML = '<li>No cases to display.</li>';
-            console.log("No cases to display in navigation."); return;
-        }
-        console.log("Displaying navigation for cases.");
-        caseData.forEach(caseObj => {
-            nav.innerHTML += `
-                <li>
-                    <a href="#case${caseObj.case_num}">Case ${caseObj.case_num}</a> - ${caseObj.percentage_change}% change - Score: ${(caseObj.summary && caseObj.summary.score) || 'N/A'}
-                </li>
-            `;
+    function applySorting() {
+        const sortValue = document.getElementById('sort-select').value;
+        displayCaseData.sort((a, b) => {
+            if (sortValue === 'case_num') return parseInt(a.case_num.replace(/[^0-9]/g,'') || 0) - parseInt(b.case_num.replace(/[^0-9]/g,'') || 0);
+            if (sortValue === 'percentage_change') return (b.percentage_change || 0) - (a.percentage_change || 0);
+            if (sortValue === 'score') return (b.summary?.score || 0) - (a.summary?.score || 0);
+            return 0;
         });
-        console.log("Navigation populated.");
+    }
+    
+    function renderDashboard() {
+        const container = document.getElementById('dashboard-stats');
+        if (!container) return;
+        
+        const totalCases = masterCaseData.length;
+        const majorCount = masterCaseData.reduce((acc, c) => acc + (c.summary?.major_findings?.length || 0), 0);
+        const minorCount = masterCaseData.reduce((acc, c) => acc + (c.summary?.minor_findings?.length || 0), 0);
+        const errorCount = masterCaseData.filter(c => !!c.summary_error).length;
+
+        container.innerHTML = `
+            <div class="col-6"><div class="stat-card"><div class="stat-value">${totalCases}</div><div class="stat-label">Total Cases</div></div></div>
+            <div class="col-6"><div class="stat-card"><div class="stat-value text-danger">${majorCount}</div><div class="stat-label">Major Findings</div></div></div>
+            <div class="col-6"><div class="stat-card"><div class="stat-value text-warning">${minorCount}</div><div class="stat-label">Minor Findings</div></div></div>
+            <div class="col-6"><div class="stat-card"><div class="stat-value">${errorCount}</div><div class="stat-label">Errors</div></div></div>
+        `;
+    }
+    
+    function renderSidebarNav() {
+        const navList = document.getElementById('case-nav-list');
+        if (!navList) return;
+        navList.innerHTML = displayCaseData.length > 0 ? 
+            displayCaseData.map(c => {
+                const hasMajor = c.summary?.major_findings?.length > 0;
+                const score = c.summary?.score ?? 'N/A';
+                return `<li><a href="#case-${c.case_num}" class="${hasMajor ? 'has-major' : ''}">Case ${c.case_num} (Score: ${score})</a></li>`;
+            }).join('') : '<li>No cases match filter.</li>';
     }
 
-    function displayCases() {
-        const container = document.getElementById('caseContainer');
-        if (!container) { console.error("Element with id 'caseContainer' not found."); return; }
-        container.innerHTML = '';
-        if (caseData.length === 0) {
-            container.innerHTML = '<p>No cases to display.</p>';
-            console.log("No cases to display in container."); return;
+    function renderCases() {
+        const container = document.getElementById('case-container');
+        if (!container) return;
+        
+        if (displayCaseData.length === 0) {
+            container.innerHTML = '<div class="alert alert-info">No cases to display. Adjust filters or submit new reports.</div>';
+            return;
         }
-        console.log("Displaying cases.");
-        caseData.forEach(caseObj => {
-            if (!caseObj.summary) {
-                container.innerHTML += `
-                    <div id="case${caseObj.case_num}">
-                        <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
-                        <p style="color: red;"><strong>Error:</strong> ${caseObj.summary_error || 'Unable to generate summary for this case.'}</p>
-                        <hr>
+
+        container.innerHTML = displayCaseData.map(c => {
+            const score = c.summary?.score;
+            let badgeClass = 'bg-secondary';
+            if (score > 0) badgeClass = 'bg-warning text-dark';
+            if (c.summary?.major_findings?.length > 0) badgeClass = 'bg-danger';
+            if (c.summary_error) badgeClass = 'bg-danger';
+
+            const summaryHtml = c.summary ? `
+                <ul class="summary-list">
+                    ${c.summary.major_findings?.map(f => `<li class="major"><strong>Major:</strong> ${f}</li>`).join('') || ''}
+                    ${c.summary.minor_findings?.map(f => `<li class="minor"><strong>Minor:</strong> ${f}</li>`).join('') || ''}
+                    ${c.summary.clarifications?.map(f => `<li class="clarification"><strong>Clarification:</strong> ${f}</li>`).join('') || ''}
+                </ul>
+            ` : `<div class="alert alert-danger"><strong>Error:</strong> ${c.summary_error}</div>`;
+
+            return `
+            <div class="case-card" id="case-${c.case_num}">
+                <div class="case-header">
+                    <h4>Case ${c.case_num}</h4>
+                    <div>
+                        <span class="case-badge ${badgeClass}">Score: ${score ?? 'N/A'}</span>
+                        <span class="case-badge bg-info text-dark">${c.percentage_change}% Change</span>
                     </div>
-                `;
-                console.log(`Displayed error for case ${caseObj.case_num}.`);
-                return;
-            }
-            container.innerHTML += `
-                <div id="case${caseObj.case_num}">
-                    <h4>Case ${caseObj.case_num} - ${caseObj.percentage_change}% change</h4>
-                    <ul class="nav nav-tabs" id="myTab${caseObj.case_num}" role="tablist">
-                        <li class="nav-item" role="presentation">
-                            <button class="nav-link active" id="summary-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#summary${caseObj.case_num}" type="button" role="tab">Summary Report</button>
-                        </li>
-                        <li class="nav-item" role="presentation">
-                            <button class="nav-link" id="combined-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#combined${caseObj.case_num}" type="button" role="tab">Combined Report</button>
-                        </li>
-                        <li class="nav-item" role="presentation">
-                            <button class="nav-link" id="resident-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#resident${caseObj.case_num}" type="button" role="tab">Resident Report</button>
-                        </li>
-                        <li class="nav-item" role="presentation">
-                            <button class="nav-link" id="attending-tab${caseObj.case_num}" data-bs-toggle="tab" data-bs-target="#attending${caseObj.case_num}" type="button" role="tab">Attending Report</button>
-                        </li>
-                    </ul>
-                    <div class="tab-content" id="myTabContent${caseObj.case_num}">
-                        <div class="tab-pane fade show active" id="summary${caseObj.case_num}" role="tabpanel">
-                            <div class="summary-output">
-                                <p><strong>Score:</strong> ${caseObj.summary.score || 'N/A'}</p>
-                                ${caseObj.summary.major_findings && caseObj.summary.major_findings.length > 0 ? `<p><strong>Major Findings:</strong></p><ul>${caseObj.summary.major_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
-                                ${caseObj.summary.minor_findings && caseObj.summary.minor_findings.length > 0 ? `<p><strong>Minor Findings:</strong></p><ul>${caseObj.summary.minor_findings.map(finding => `<li>${finding}</li>`).join('')}</ul>` : ''}
-                                ${caseObj.summary.clarifications && caseObj.summary.clarifications.length > 0 ? `<p><strong>Clarifications:</strong></p><ul>${caseObj.summary.clarifications.map(clarification => `<li>${clarification}</li>`).join('')}</ul>` : ''}
-                            </div>
-                        </div>
-                        <div class="tab-pane fade" id="combined${caseObj.case_num}" role="tabpanel">
-                            <div class="diff-output">${caseObj.diff}</div>
-                        </div>
-                        <div class="tab-pane fade" id="resident${caseObj.case_num}" role="tabpanel">
-                            <div class="diff-output"><pre>${caseObj.resident_report}</pre></div>
-                        </div>
-                        <div class="tab-pane fade" id="attending${caseObj.case_num}" role="tabpanel">
-                            <div class="diff-output"><pre>${caseObj.attending_report}</pre></div>
-                        </div>
-                    </div>
-                    <hr>
                 </div>
-            `;
-            console.log(`Displayed case ${caseObj.case_num}.`);
+                <div class="p-2">
+                    <ul class="nav nav-tabs" role="tablist">
+                        <li class="nav-item" role="presentation"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#summary-${c.case_num}" type="button">Summary</button></li>
+                        <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#diff-${c.case_num}" type="button">Diff View</button></li>
+                        <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#resident-${c.case_num}" type="button">Resident</button></li>
+                        <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#attending-${c.case_num}" type="button">Attending</button></li>
+                    </ul>
+                    <div class="tab-content">
+                        <div class="tab-pane fade show active" id="summary-${c.case_num}">${summaryHtml}</div>
+                        <div class="tab-pane fade" id="diff-${c.case_num}"><div class="diff-output">${c.diff}</div></div>
+                        <div class="tab-pane fade" id="resident-${c.case_num}"><pre class="report-content">${c.resident_report}</pre></div>
+                        <div class="tab-pane fade" id="attending-${c.case_num}"><pre class="report-content">${c.attending_report}</pre></div>
+                    </div>
+                </div>
+            </div>`;
+        }).join('');
+    }
+
+    function renderTopFindings() {
+        const container = document.getElementById('top-summary-findings');
+        if (!container) return;
+        const majorFindings = masterCaseData.flatMap(c => 
+            c.summary?.major_findings?.map(f => ({ caseNum: c.case_num, finding: f })) || []
+        );
+        
+        if (majorFindings.length === 0) {
+            container.innerHTML = '<h5>No Major Findings in this Batch</h5>';
+            return;
+        }
+
+        container.innerHTML = `
+            <h5 class="text-danger">Key Major Findings</h5>
+            <ul class="list-group list-group-flush">
+                ${majorFindings.map(item => `
+                    <li class="list-group-item bg-transparent border-0 px-0 py-1">
+                        <a href="#case-${item.caseNum}" class="text-decoration-none"><strong>Case ${item.caseNum}:</strong> ${item.finding}</a>
+                    </li>
+                `).join('')}
+            </ul>
+        `;
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        if (masterCaseData && masterCaseData.length > 0) {
+            document.getElementById('results-area').style.display = 'block';
+            updateView();
+        }
+        
+        document.getElementById('sort-select').addEventListener('change', updateView);
+        document.getElementById('filter-select').addEventListener('change', updateView);
+
+        document.getElementById('reportForm').addEventListener('submit', () => {
+            document.getElementById('loading-overlay').style.display = 'flex';
         });
-        console.log("All cases displayed.");
-    }
-
-    document.addEventListener("DOMContentLoaded", () => {
-        if (caseData && caseData.length > 0) {
-            console.log("Case data available. Rendering cases and navigation.");
-            displayCases();
-            displayNavigation();
-        } else {
-            console.log("No case data available to display.");
-        }
-    });
-
-    function scrollToTop() {
-        const majorFindingsSection = document.getElementById('majorFindings');
-        if (majorFindingsSection) {
-            majorFindingsSection.scrollIntoView({ behavior: 'smooth' });
-        }
-    }
-
-    document.getElementById('reportForm').addEventListener('submit', function() {
-        document.getElementById('loadingAnimation').style.display = 'block';
     });
 </script>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
     """
     return render_template_string(template, case_data=case_data, custom_prompt=custom_prompt)
 
-# Local debugging only (Render uses gunicorn app:app)
 if __name__ == '__main__':
-    app.run(debug=True, port=5001)
+    # Use waitress for a more production-ready local server
+    from waitress import serve
+    serve(app, host='0.0.0.0', port=5001)
