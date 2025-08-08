@@ -373,16 +373,46 @@ def safe_output_text(response):
     # Last resort – raw dump for debugging
     return json.dumps(response.model_dump() if hasattr(response, "model_dump") else dict(response))
 
+# NEW: robust structured JSON extraction for Responses API (json_schema mode)
+def safe_output_json(response):
+    # 1) Preferred convenience attr in newer SDKs
+    if hasattr(response, "output_parsed") and response.output_parsed:
+        return response.output_parsed
+
+    # 2) Walk the structured output tree
+    for item in getattr(response, "output", []) or []:
+        for c in getattr(item, "content", []) or []:
+            t = getattr(c, "type", None)
+            if t in ("output_json", "json_object", "json"):
+                parsed = getattr(c, "parsed", None)
+                if parsed is not None:
+                    return parsed
+            if t == "output_text" and getattr(c, "text", None):
+                txt = c.text.strip()
+                if txt.startswith("{") or txt.startswith("["):
+                    try:
+                        return json.loads(txt)
+                    except Exception:
+                        pass
+
+    # 3) Last resort: try plain text path
+    try:
+        txt = (safe_output_text(response) or "").strip()
+        if txt.startswith("{") or txt.startswith("["):
+            return json.loads(txt)
+    except Exception:
+        pass
+
+    raise ValueError("No parsed JSON found in response")
+
 # ------------------------- OpenAI call --------------------------------
 def get_summary(case_text, custom_prompt, case_number):
     try:
         logger.info(f"Processing case {case_number} with model={MODEL_ID}")
 
-        # The 'text' parameter structure has been corrected below
         response = client.responses.create(
             model=MODEL_ID,
             instructions=custom_prompt,
-            # include "JSON" in input to satisfy the guardrail
             input=(
                 "Return JSON only. Do not include any prose before or after the JSON.\n"
                 f"Case Number: {case_number}\n{case_text}"
@@ -393,9 +423,7 @@ def get_summary(case_text, custom_prompt, case_number):
                 "verbosity": "low",
                 "format": {
                     "type": "json_schema",
-                    # The name of your schema
                     "name": "CaseSummary",
-                    # The 'schema' object should be a direct child of 'format'
                     "schema": {
                         "type": "object",
                         "properties": {
@@ -413,17 +441,19 @@ def get_summary(case_text, custom_prompt, case_number):
                             "score"
                         ],
                         "additionalProperties": False,
-                        "strict": True # Moved strict into the schema definition
+                        "strict": True
                     }
                 }
             },
         )
 
-        response_text = safe_output_text(response)
-        logger.info(f"Received response for case {case_number}: {response_text[:400]}...")
-        return json.loads(response_text)
-
-
+        try:
+            parsed = safe_output_json(response)
+            logger.info(f"Received response for case {case_number}: OK (parsed)")
+            return parsed
+        except Exception as e:
+            logger.error(f"JSON parse failure for case {case_number}: {e!r}")
+            return {"case_number": case_number, "error": "Invalid JSON response from AI."}
 
     except NotFoundError as e:
         logger.error(f"[404] NotFound: {e.message}")
@@ -443,9 +473,6 @@ def get_summary(case_text, custom_prompt, case_number):
     except APIError as e:
         logger.error(f"[5xx] APIError: {e.message}")
         return {"case_number": case_number, "error": "Server error"}
-    except json.JSONDecodeError as jde:
-        logger.error(f"JSON decode error for case {case_number}: {jde}")
-        return {"case_number": case_number, "error": "Invalid JSON response from AI."}
     except Exception as e:
         logger.error(f"Unhandled error for case {case_number}: {repr(e)}")
         return {"case_number": case_number, "error": f"Unhandled: {repr(e)}"}
@@ -495,15 +522,31 @@ def extract_cases(text, custom_prompt):
         logger.debug(f"Processing Case {case_num}:")
         logger.debug(f"Case Content: {case_content[:200]}{'...' if len(case_content) > 200 else ''}")
 
-        reports = re.split(r'\s*(Attending\s+Report\s*:|Resident\s+Report\s*:)\s*', case_content, flags=re.IGNORECASE)
-        logger.debug(f"Reports split: {reports}")
+        # Label-aware split (works regardless of which is pasted first; tolerates "Attending:" / "Resident:")
+        regex = r'(?im)^\s*(Attending(?:\s+Report)?\s*:|Resident(?:\s+Report)?\s*:)'
+        parts = re.split(regex, case_content)
+        logger.debug(f"Reports split: {parts}")
 
-        if len(reports) >= 3:
-            attending_report = reports[2].strip()
-            resident_report = reports[4].strip() if len(reports) > 4 else ""
-            case_text = f"Resident Report: {resident_report}\nAttending Report: {attending_report}"
+        label_to_text = {}
+        for j in range(1, len(parts), 2):
+            label_raw = (parts[j] or "").strip().lower().replace(":", "")
+            content = (parts[j+1] if j+1 < len(parts) else "").strip()
+            if "attending" in label_raw:
+                label_to_text["attending"] = content
+            elif "resident" in label_raw:
+                label_to_text["resident"] = content
+
+        resident_report = label_to_text.get("resident", "")
+        attending_report = label_to_text.get("attending", "")
+
+        if resident_report and attending_report:
+            # Normalize order for the model: Resident first, Attending second
+            case_text = (
+                f"Resident Report: {normalize_text(resident_report)}\n"
+                f"Attending Report: {normalize_text(attending_report)}"
+            )
             cases_data.append((case_text, case_num))
-            logger.info(f"Prepared case {case_num} for processing.")
+            logger.info(f"Prepared case {case_num} (normalized order: Resident → Attending).")
         else:
             logger.warning(f"Case {case_num} does not contain both Attending and Resident Reports.")
 
@@ -534,7 +577,7 @@ def extract_cases(text, custom_prompt):
                 'attending_report': attending_report,
                 'percentage_change': calculate_change_percentage(resident_report, remove_attending_review_line(attending_report)),
                 'diff': create_diff_by_section(resident_report, attending_report),
-                'summary': ai_summary if 'error' not in ai_summary else None,
+                'summary': ai_summaries[int(0)] if isinstance(ai_summaries, list) and ai_summaries else (ai_summary if 'error' not in ai_summary else None),
                 'summary_error': ai_summary.get('error') if isinstance(ai_summary, dict) else None
             })
             logger.info(f"Assigned summary to case {case_num}.")
