@@ -25,6 +25,47 @@ logger.info(f"API key present: {bool(os.getenv('OPENAI_API_KEY'))}")
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MODEL_ID = os.getenv("MODEL_ID", "gpt-5-mini")  # you can set MODEL_ID in Render to flip models
 
+# ----------------------- Tool Definition -----------------------------
+# Define the tool that represents our desired JSON output structure.
+RADIOLOGY_SUMMARY_TOOL = [
+    {
+        "type": "function",
+        "name": "summarize_radiology_report",
+        "description": "Summarizes the differences between a resident and attending radiology report, categorizing findings and calculating a score.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "case_number": {
+                    "type": "string",
+                    "description": "The case number being analyzed."
+                },
+                "major_findings": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "A list of major, management-changing findings identified by the attending but missed by the resident."
+                },
+                "minor_findings": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "A list of minor, clinically relevant but not urgent findings."
+                },
+                "clarifications": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "A list of wording changes, formatting corrections, or minor descriptor edits with no management change."
+                },
+                "score": {
+                    "type": "integer",
+                    "description": "A calculated score based on the findings: 3 points for each major finding and 1 point for each minor finding."
+                }
+            },
+            "required": ["case_number", "major_findings", "minor_findings", "clarifications", "score"],
+            "additionalProperties": False
+        },
+        "strict": True
+    }
+]
+
 # ----------------------- Default prompt ------------------------------
 DEFAULT_PROMPT = """Developer: Radiology revision differ (GPT-5).
 
@@ -183,8 +224,8 @@ Before output:
 </validation_checklist>
 
 <output_contract>
-Return JSON ONLY that conforms to the schema the API provides.
-No markdown, no explanations, no trailing text.
+Return your analysis by calling the `summarize_radiology_report` function tool.
+Do not include any prose before or after the JSON.
 </output_contract>
 
 <examples>
@@ -356,98 +397,42 @@ def create_diff_by_section(resident_text, attending_text):
                 diff_html += "<br><br>"
     return diff_html
 
-def safe_output_text(response):
-    # Newer SDKs expose .output_text; provide a robust fallback.
-    if hasattr(response, "output_text") and response.output_text is not None:
-        return response.output_text
-    try:
-        chunks = []
-        for item in getattr(response, "output", []) or []:
-            for c in getattr(item, "content", []) or []:
-                if getattr(c, "type", None) == "output_text" and getattr(c, "text", None):
-                    chunks.append(c.text)
-        if chunks:
-            return "".join(chunks)
-    except Exception:
-        pass
-    # Last resort – raw dump for debugging
-    return json.dumps(response.model_dump() if hasattr(response, "model_dump") else dict(response))
-
-# NEW: robust structured JSON extraction for Responses API (json_schema mode)
-def safe_output_json(response):
-    # 1) Preferred convenience attr in newer SDKs
-    if hasattr(response, "output_parsed") and response.output_parsed:
-        return response.output_parsed
-
-    # 2) Walk the structured output tree
-    for item in getattr(response, "output", []) or []:
-        for c in getattr(item, "content", []) or []:
-            t = getattr(c, "type", None)
-            if t in ("output_json", "json_object", "json"):
-                parsed = getattr(c, "parsed", None)
-                if parsed is not None:
-                    return parsed
-            if t == "output_text" and getattr(c, "text", None):
-                txt = c.text.strip()
-                if txt.startswith("{") or txt.startswith("["):
-                    try:
-                        return json.loads(txt)
-                    except Exception:
-                        pass
-
-    # 3) Last resort: try plain text path
-    try:
-        txt = (safe_output_text(response) or "").strip()
-        if txt.startswith("{") or txt.startswith("["):
-            return json.loads(txt)
-    except Exception:
-        pass
-
-    raise ValueError("No parsed JSON found in response")
-
 # ------------------------- OpenAI call --------------------------------
 def get_summary(case_text, custom_prompt, case_number):
     try:
-        logger.info(f"Processing case {case_number} with model={MODEL_ID}")
+        logger.info(f"Processing case {case_number} with model={MODEL_ID} using function calling.")
 
         response = client.responses.create(
             model=MODEL_ID,
             instructions=custom_prompt,
             input=(
-                "Return JSON only. Do not include any prose before or after the JSON.\n"
                 f"Case Number: {case_number}\n{case_text}"
             ),
-            max_output_tokens=1200,
-            temperature=0,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "CaseSummary",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "case_number": {"type": ["string", "number"]},
-                            "major_findings": {"type": "array", "items": {"type": "string"}},
-                            "minor_findings": {"type": "array", "items": {"type": "string"}},
-                            "clarifications": {"type": "array", "items": {"type": "string"}},
-                            "score": {"type": "integer"}
-                        },
-                        "required": ["case_number","major_findings","minor_findings","clarifications","score"],
-                        "additionalProperties": False
-                    },
-                    "strict": True
-                }
-            },
+            tools=RADIOLOGY_SUMMARY_TOOL,
+            # Force the model to call our specific function
+            tool_choice={"type": "function", "name": "summarize_radiology_report"}
         )
 
-        try:
-            parsed = safe_output_json(response)
-            logger.info(f"Received response for case {case_number}: OK (parsed)")
-            return parsed
-        except Exception as e:
-            logger.error(f"JSON parse failure for case {case_number}: {e!r}")
-            return {"case_number": case_number, "error": "Invalid JSON response from AI."}
+        # Extract the function call arguments from the response
+        parsed_json = None
+        raw_arguments = ""
+        for item in response.output:
+            if item.type == "function_call" and item.name == "summarize_radiology_report":
+                raw_arguments = item.arguments
+                parsed_json = json.loads(raw_arguments)
+                break  # Stop after finding the first one
 
+        if parsed_json:
+            logger.info(f"Received and parsed function call for case {case_number}: OK")
+            return parsed_json
+        else:
+            logger.error(f"Function call not found in response for case {case_number}")
+            return {"case_number": case_number, "error": "AI did not return the expected tool call."}
+
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON parse failure for case {case_number}: {e!r}")
+        logger.debug(f"Raw arguments from model that failed to parse: {raw_arguments}")
+        return {"case_number": case_number, "error": "Invalid JSON in tool arguments from AI."}
     except NotFoundError as e:
         logger.error(f"[404] NotFound: {e.message}")
         return {"case_number": case_number, "error": f"404 NotFound: {e.message}. Check model id / project key."}
@@ -484,11 +469,10 @@ def process_cases(cases_data, custom_prompt, max_workers=8):
             case_num = future_to_case[future]
             try:
                 parsed_json = future.result() or {}
-                parsed_json['score'] = parsed_json.get(
-                    'score',
-                    len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', []))
-                )
-                logger.info(f"Processed summary for case {case_num}: Score {parsed_json['score']}")
+                # Ensure score exists, calculating it if necessary, but respecting AI-provided score
+                if 'score' not in parsed_json:
+                    parsed_json['score'] = len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', []))
+                logger.info(f"Processed summary for case {case_num}: Score {parsed_json.get('score', 'N/A')}")
             except Exception as e:
                 logger.error(f"Error processing case {case_num}: {e}")
                 parsed_json = {"case_number": case_num, "error": f"Unhandled: {repr(e)}"}
@@ -515,7 +499,6 @@ def extract_cases(text, custom_prompt):
         logger.debug(f"Processing Case {case_num}:")
         logger.debug(f"Case Content: {case_content[:200]}{'...' if len(case_content) > 200 else ''}")
 
-        # Label-aware split (works regardless of which is pasted first; tolerates "Attending:" / "Resident:")
         regex = r'(?im)^\s*(Attending(?:\s+Report)?\s*:|Resident(?:\s+Report)?\s*:)'
         parts = re.split(regex, case_content)
         logger.debug(f"Reports split: {parts}")
@@ -533,7 +516,6 @@ def extract_cases(text, custom_prompt):
         attending_report = label_to_text.get("attending", "")
 
         if resident_report and attending_report:
-            # Normalize order for the model: Resident first, Attending second
             case_text = (
                 f"Resident Report: {normalize_text(resident_report)}\n"
                 f"Attending Report: {normalize_text(attending_report)}"
@@ -549,31 +531,30 @@ def extract_cases(text, custom_prompt):
 
     ai_summaries = process_cases(cases_data, custom_prompt, max_workers=8)
 
-    for ai_summary in ai_summaries:
-        case_num = ai_summary.get('case_number')
-        if not case_num:
-            logger.warning("Summary missing 'case_number'. Skipping.")
-            continue
+    summaries_by_case_num = {str(s.get('case_number')): s for s in ai_summaries}
 
-        case_num = str(case_num)
-        case_content = next((ct for ct, num in cases_data if num == case_num), "")
-        if case_content:
-            try:
-                resident_report = case_content.split("\nAttending Report:")[0].replace("Resident Report: ", "").strip()
-                attending_report = case_content.split("\nAttending Report:")[1].strip()
-            except IndexError:
-                logger.error(f"Error parsing reports for case {case_num}.")
-                continue
+    for case_text, case_num in cases_data:
+        try:
+            resident_report = case_text.split("\nAttending Report:")[0].replace("Resident Report: ", "").strip()
+            attending_report = case_text.split("\nAttending Report:")[1].strip()
+
+            ai_summary = summaries_by_case_num.get(case_num, {})
+
             parsed_cases.append({
                 'case_num': case_num,
                 'resident_report': resident_report,
                 'attending_report': attending_report,
                 'percentage_change': calculate_change_percentage(resident_report, remove_attending_review_line(attending_report)),
                 'diff': create_diff_by_section(resident_report, attending_report),
-                'summary': ai_summaries[int(0)] if isinstance(ai_summaries, list) and ai_summaries else (ai_summary if 'error' not in ai_summary else None),
-                'summary_error': ai_summary.get('error') if isinstance(ai_summary, dict) else None
+                # *** BUG FIX: Assign the correct summary to each case ***
+                'summary': ai_summary if 'error' not in ai_summary else None,
+                'summary_error': ai_summary.get('error')
             })
             logger.info(f"Assigned summary to case {case_num}.")
+        except IndexError:
+            logger.error(f"Error parsing reports for case {case_num}.")
+            continue
+
     logger.info(f"Total parsed_cases to return: {len(parsed_cases)}")
     logger.debug(f"Parsed_cases: {json.dumps(parsed_cases, indent=2)}")
     return parsed_cases
@@ -799,9 +780,8 @@ def index():
 </body>
 </html>
     """
-
     return render_template_string(template, case_data=case_data, custom_prompt=custom_prompt)
 
 # Local debugging only (Render uses gunicorn app:app)
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, port=5001)
