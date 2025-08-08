@@ -51,11 +51,40 @@ If input is malformed or either report is missing → return empty arrays and sc
 <taxonomy_and_definitions>
 We classify each attending change by SEVERITY into one of three output buckets:
 
-MAJOR (management-changing, urgent/critical):
-- New urgent/critical entity not in the resident report, OR
-- Correction from benign/absent → urgent/critical for the same entity, OR
-- Malpositioned/high-risk device/line (airway, esophagus, pleura, heart, great vessels), OR
-- Explicit red-flag terms indicating immediate risk (not merely wording): tension, active bleed/extravasation, free air/perforation, ischemia/infarct/occlusion, dissection, torsion, obstructed + infected collecting system, midline shift/herniation, cord compression, large pericardial effusion with tamponade concern, pneumothorax (new vs previously absent), brain death, large acute hemorrhage.
+MAJOR (management-changing, urgent/critical). Classify as MAJOR when newly added, corrected from benign/absent → present/critical, or critically negated per rules. The canonical MAJOR catalogue includes ALL of the following:
+
+- retained foreign body
+- mass / tumor
+- malpositioned line/tube of immediate clinical concern (airway, esophagus, pleura, heart, great vessels)
+- life-threatening hemorrhage or vascular disruption (including active bleeding/extravasation)
+- necrotizing fasciitis
+- free air or active GI leak
+- ectopic pregnancy
+- intestinal ischemia or portomesenteric gas
+- ovarian torsion or testicular torsion
+- placental abruption
+- absent perfusion in a postoperative transplant (e.g., kidney)
+- infected renal collecting system obstruction
+- acute cholecystitis
+- intracranial hemorrhage
+- midline shift
+- brain herniation
+- acute cerebral infarction / abscess / meningoencephalitis
+- airway compromise
+- abscess / discitis (spinal or deep space infection of similar acuity)
+- hemorrhage (non-intracranial acute hemorrhage)
+- cord compression / unstable spine fracture / transection
+- acute cord hemorrhage / infarct
+- pneumothorax
+- large pericardial effusion (tamponade concern)
+- findings suggestive of active TB
+- impending pathologic fracture
+- acute fracture
+- brain death
+- high-probability V/Q scan
+- arterial dissection / occlusion
+- acute thrombotic/embolic event (DVT, PE)
+- aneurysm or vascular disruption
 
 MINOR (clinically relevant but not immediately dangerous):
 - New non-urgent pathology or meaningful correction that affects care but is not emergent.
@@ -359,7 +388,7 @@ def get_summary(case_text, custom_prompt, case_number):
                 f"Case Number: {case_number}\n{case_text}"
             ),
             max_output_tokens=1200,
-            reasoning={"effort": "minimal"},
+            reasoning={"effort": "medium"},
             text={
                 "verbosity": "low",
                 "format": {
