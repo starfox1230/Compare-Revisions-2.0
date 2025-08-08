@@ -23,7 +23,7 @@ logger.info(f"API key present: {bool(os.getenv('OPENAI_API_KEY'))}")
 
 # --------------------------- OpenAI ----------------------------------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-MODEL_ID = os.getenv("MODEL_ID", "gpt-4-turbo") # Updated default model
+MODEL_ID = os.getenv("MODEL_ID", "gpt-5-mini") # Updated default model
 
 # ----------------------- Tool Definition -----------------------------
 RADIOLOGY_SUMMARY_TOOL = [
