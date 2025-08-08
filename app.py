@@ -143,10 +143,10 @@ def get_summary(case_text, custom_prompt, case_number):
     try:
         logger.info(f"Processing case {case_number} with model={MODEL_ID}")
 
-        # IMPORTANT: Include the word "JSON" in input to satisfy json_object/json_schema guardrail.
         response = client.responses.create(
             model=MODEL_ID,
             instructions=custom_prompt,
+            # include "JSON" in input to satisfy the guardrail
             input=(
                 "Return JSON only. Do not include any prose before or after the JSON.\n"
                 f"Case Number: {case_number}\n{case_text}"
@@ -157,8 +157,9 @@ def get_summary(case_text, custom_prompt, case_number):
                 "verbosity": "low",
                 "format": {
                     "type": "json_schema",
+                    # <-- moved here (required): text.format.name
+                    "name": "CaseSummary",
                     "json_schema": {
-                        "name": "CaseSummary",
                         "strict": True,
                         "schema": {
                             "type": "object",
@@ -169,7 +170,13 @@ def get_summary(case_text, custom_prompt, case_number):
                                 "clarifications": {"type": "array", "items": {"type": "string"}},
                                 "score": {"type": "integer"}
                             },
-                            "required": ["case_number", "major_findings", "minor_findings", "clarifications", "score"],
+                            "required": [
+                                "case_number",
+                                "major_findings",
+                                "minor_findings",
+                                "clarifications",
+                                "score"
+                            ],
                             "additionalProperties": False
                         }
                     }
@@ -180,6 +187,8 @@ def get_summary(case_text, custom_prompt, case_number):
         response_text = safe_output_text(response)
         logger.info(f"Received response for case {case_number}: {response_text[:400]}...")
         return json.loads(response_text)
+
+
 
     except NotFoundError as e:
         logger.error(f"[404] NotFound: {e.message}")
