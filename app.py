@@ -763,7 +763,7 @@ Attending Report:
           <div id="caseNav" class="case-nav small"></div>
 
           <div class="mt-3 small text-secondary">
-            <div><span class="kbd">J</span>/<span class="kbd">K</span> next/prev</div>
+            <div><span class="kbd">C</span>/<span class="kbd">V</span> prev/next</div>
             <div><span class="kbd">1–4</span> tabs</div>
             <div><span class="kbd">F</span> focus search</div>
             <div><span class="kbd">S</span> cycle sort</div>
@@ -778,7 +778,7 @@ Attending Report:
           <div id="emptyState" class="text-center text-secondary p-5">
             <i class="bi bi-arrow-up-right-square text-primary fs-1 d-block mb-2"></i>
             <div class="mb-1">Paste reports above and click <strong>Compare &amp; Summarize</strong>.</div>
-            <div class="small">Keyboard: J/K to move, 1–4 to switch tabs.</div>
+            <div class="small">Keyboard: C/V to move, 1–4 to switch tabs.</div>
           </div>
           <div id="caseContainer" class="d-none"></div>
         </div>
@@ -1297,9 +1297,9 @@ No pulmonary embolism.`;
         if (e.key.toLowerCase()==='escape') document.activeElement.blur();
         return;
       }
-      if (e.key==='j' || e.key==='J') {
+      if (e.key==='v' || e.key==='V') {
         e.preventDefault(); focusCase(currentIndex+1);
-      } else if (e.key==='k' || e.key==='K') {
+      } else if (e.key==='c' || e.key==='C') {
         e.preventDefault(); focusCase(currentIndex-1);
       } else if (['1','2','3','4'].includes(e.key)) {
         e.preventDefault(); switchTab(parseInt(e.key,10));
