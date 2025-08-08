@@ -381,6 +381,10 @@ def get_summary(case_text, custom_prompt, case_number):
             input=(f"Case Number: {case_number}\n{case_text}"),
             tools=RADIOLOGY_SUMMARY_TOOL,
             tool_choice={"type": "function", "name": "summarize_radiology_report"}
+            # 🔑 New in GPT-5: pick how hard it “thinks”
+            reasoning={"effort": "medium"},  # use "low" | "medium" (default) | "high" when you want more deliberation
+            # 🔑 Also new: control how long/short the *final* answer is
+            text={"verbosity": "medium"}  # use "low" | "medium" (default) | "high"
         )
 
         parsed_json = None
