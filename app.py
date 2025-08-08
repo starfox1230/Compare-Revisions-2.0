@@ -24,6 +24,8 @@ logger.info(f"API key present: {bool(os.getenv('OPENAI_API_KEY'))}")
 # --------------------------- OpenAI ----------------------------------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MODEL_ID = os.getenv("MODEL_ID", "gpt-5-mini")  # flip in env as needed
+REASONING_EFFORT = os.getenv("REASONING_EFFORT", "minimal")  # minimal|low|medium|high
+VERBOSITY = os.getenv("VERBOSITY", "low")                    # low|medium|high
 
 # ----------------------- Tool Definition -----------------------------
 RADIOLOGY_SUMMARY_TOOL = [
@@ -380,11 +382,9 @@ def get_summary(case_text, custom_prompt, case_number):
             instructions=custom_prompt,
             input=(f"Case Number: {case_number}\n{case_text}"),
             tools=RADIOLOGY_SUMMARY_TOOL,
-            tool_choice={"type": "function", "name": "summarize_radiology_report"}
-            # 🔑 New in GPT-5: pick how hard it “thinks”
-            reasoning={"effort": "medium"},  # use "low" | "medium" (default) | "high" when you want more deliberation
-            # 🔑 Also new: control how long/short the *final* answer is
-            text={"verbosity": "medium"}  # use "low" | "medium" (default) | "high"
+            tool_choice={"type": "function", "name": "summarize_radiology_report"},
+            reasoning={"effort": REASONING_EFFORT},   # <-- uses env variable
+            text={"verbosity": VERBOSITY},            # <-- uses env variable
         )
 
         parsed_json = None
@@ -1259,7 +1259,7 @@ No pulmonary embolism.`;
     window.toggleCollapse = toggleCollapse;
 
     function copyJSON(text) {
-      navigator.clipboard.writeText(JSON.parse(text))
+      navigator.clipboard.writeText(text)
         .then(()=> toast('JSON copied'))
         .catch(()=> toast('Copy failed', 2000));
     }
