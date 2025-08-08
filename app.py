@@ -1,5 +1,5 @@
-from flask import Flask, render_template_string, request
-import difflib, re, os, json, logging
+from flask import Flask, render_template_string, request, send_file
+import difflib, re, os, json, logging, io
 import openai as _openai_pkg
 from openai import OpenAI
 from openai import (
@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 # --------------------------- Logging ---------------------------------
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     handlers=[logging.StreamHandler()]
 )
@@ -23,10 +23,9 @@ logger.info(f"API key present: {bool(os.getenv('OPENAI_API_KEY'))}")
 
 # --------------------------- OpenAI ----------------------------------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-MODEL_ID = os.getenv("MODEL_ID", "gpt-5-mini")  # set MODEL_ID in Render to flip models
+MODEL_ID = os.getenv("MODEL_ID", "gpt-5-mini")  # can flip in environment
 
 # ----------------------- Tool Definition -----------------------------
-# Define the tool that represents our desired JSON output structure.
 RADIOLOGY_SUMMARY_TOOL = [
     {
         "type": "function",
@@ -35,29 +34,11 @@ RADIOLOGY_SUMMARY_TOOL = [
         "parameters": {
             "type": "object",
             "properties": {
-                "case_number": {
-                    "type": "string",
-                    "description": "The case number being analyzed."
-                },
-                "major_findings": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "A list of major, management-changing findings identified by the attending but missed by the resident."
-                },
-                "minor_findings": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "A list of minor, clinically relevant but not urgent findings."
-                },
-                "clarifications": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "A list of wording changes, formatting corrections, or minor descriptor edits with no management change."
-                },
-                "score": {
-                    "type": "integer",
-                    "description": "A calculated score based on the findings: 3 points for each major finding and 1 point for each minor finding."
-                }
+                "case_number": {"type": "string", "description": "The case number being analyzed."},
+                "major_findings": {"type": "array", "items": {"type": "string"}},
+                "minor_findings": {"type": "array", "items": {"type": "string"}},
+                "clarifications": {"type": "array", "items": {"type": "string"}},
+                "score": {"type": "integer", "description": "Score = 3×majors + 1×minors."}
             },
             "required": ["case_number", "major_findings", "minor_findings", "clarifications", "score"],
             "additionalProperties": False
@@ -67,6 +48,7 @@ RADIOLOGY_SUMMARY_TOOL = [
 ]
 
 # ----------------------- Default prompt ------------------------------
+# (leave blank per user instruction; paste your own later)
 DEFAULT_PROMPT = """Developer: Radiology revision differ (GPT-5).
 
 <goal>
@@ -143,7 +125,7 @@ If unclear whether items refer to the same entity, favor the lower-severity buck
 </same_entity_test>
 
 <additions_vs_corrections>
-An attending change can be an ADDITION (attending adds something) or a CORRECTION (attending negates/downgrades):
+An attending change can be an ADDITION (attending adds something) or a CORRECTION (attending negates/downgrades the resident).
 
 A) ADDITIONS:
 - Apply MAJOR if the added entity is urgent/critical (red-flags, device malposition, etc.).
@@ -227,6 +209,106 @@ Before output:
 Return your analysis by calling the `summarize_radiology_report` function tool.
 Do not include any prose before or after the JSON.
 </output_contract>
+
+<examples>
+
+Example 1 — Same-entity descriptor (no management delta):
+Resident: “PE in RLL segmental branches.”
+Attending: “PE in RLL subsegmental branches; small clot burden.”
+→ major: []
+→ minor: []
+→ clarifications: ["PE location refined to subsegmental; small clot burden (descriptor: location; descriptor: certainty)"]
+→ score: 0
+
+Example 2 — New urgent finding:
+Resident: “No pneumothorax.”
+Attending: “Small right pneumothorax.”
+→ major: ["Right pneumothorax (perceptual; new critical finding)"]
+→ minor: []
+→ clarifications: []
+→ score: 3
+
+Example 3 — Critical negation (definite → no):
+Resident: “Acute PE; start anticoagulation.”
+Attending: “No pulmonary embolism.”
+→ major: ["No pulmonary embolism (interpretive; critical correction; resident said acute PE)"]
+→ minor: []
+→ clarifications: []
+→ score: 3
+
+Example 4 — Probable → no (soft negation):
+Resident: “Probable segmental PE, RLL.”
+Attending: “No PE.”
+→ major: []
+→ minor: ["No PE (interpretive; correction; resident said probable)"]
+→ clarifications: []
+→ score: 1
+
+Example 5 — Questionable → no (wording cleanup):
+Resident: “Questionable subsegmental PE.”
+Attending: “No PE.”
+→ major: []
+→ minor: []
+→ clarifications: ["No PE (interpretive; descriptor: certainty; resident said questionable)"]
+→ score: 0
+
+Example 6 — Malpositioned device:
+Resident: “NG tube present.”
+Attending: “NG tube coiled in esophagus.”
+→ major: ["Malpositioned NG tube (esophageal) (perceptual; malpositioned device)"]
+→ minor: []
+→ clarifications: []
+→ score: 3
+
+Example 7 — Free air artifact (critical downshift):
+Resident: “Free air under diaphragm.”
+Attending: “No free air; prior image was artifact.”
+→ major: ["No free air (interpretive; critical correction; artifact resolved)"]
+→ minor: []
+→ clarifications: []
+→ score: 3
+
+Example 8 — Non-urgent correction:
+Resident: “Normal abdomen.”
+Attending: “Benign hepatic hemangioma; cholelithiasis without cholecystitis.”
+→ major: []
+→ minor: ["Hepatic hemangioma (perceptual; classification change; follow-up impact)", "Cholelithiasis without cholecystitis (perceptual)"]
+→ clarifications: []
+→ score: 2
+
+Example 9 — Threshold crossing (upgrade to MINOR):
+Resident: “Pulmonary nodule 5 mm.”
+Attending: “Pulmonary nodule 8 mm (follow-up recommended).”
+→ major: []
+→ minor: ["Pulmonary nodule 8 mm (descriptor: size; threshold crossed; follow-up impact)"]
+→ clarifications: []
+→ score: 1
+
+Example 10 — Laterality/location correction:
+Resident: “Left lower lobe pneumonia.”
+Attending: “Right lower lobe pneumonia.”
+→ major: []
+→ minor: ["Right lower lobe pneumonia (interpretive; laterality correction)"]
+→ clarifications: []
+→ score: 1
+
+Example 11 — ICH added:
+Resident: “No acute intracranial hemorrhage.”
+Attending: “Small acute subarachnoid hemorrhage.”
+→ major: ["Acute subarachnoid hemorrhage (perceptual; new critical finding)"]
+→ minor: []
+→ clarifications: []
+→ score: 3
+
+Example 12 — Descriptor only:
+Resident: “Sigmoid diverticulitis.”
+Attending: “Sigmoid diverticulitis with trace adjacent fluid; no abscess.”
+→ major: []
+→ minor: []
+→ clarifications: ["Adds trace adjacent fluid; no abscess (descriptor: degree; descriptor: negative finding)"]
+→ score: 0
+
+</examples>
 """
 
 # --------------------------- Helpers ---------------------------------
@@ -245,11 +327,9 @@ def calculate_change_percentage(resident_text, attending_text):
     return round((1 - matcher.ratio()) * 100, 2)
 
 def split_into_paragraphs(text):
-    # Keep paragraphs but also split on single newlines that start a word (original heuristics)
     paragraphs = re.split(r'\n{2,}|\n(?=\w)', text)
     return [para.strip() for para in paragraphs if para.strip()]
 
-# --- NEW: produce diff with classes, so we can toggle equal content ---
 def create_diff_by_section(resident_text, attending_text):
     resident_text = normalize_text(resident_text)
     attending_text = normalize_text(remove_attending_review_line(attending_text))
@@ -261,47 +341,45 @@ def create_diff_by_section(resident_text, attending_text):
     for opcode, a1, a2, b1, b2 in matcher.get_opcodes():
         if opcode == 'equal':
             for paragraph in resident_paragraphs[a1:a2]:
-                diff_html += f'<div class="eq">{paragraph}</div><div class="sp"/></div>'
+                diff_html += f'<div class="para equal">{paragraph}</div>'
         elif opcode == 'insert':
             for paragraph in attending_paragraphs[b1:b2]:
-                diff_html += f'<div class="ins">{paragraph}</div><div class="sp"/></div>'
+                diff_html += f'<div class="para ins">[Inserted: {paragraph}]</div>'
         elif opcode == 'delete':
             for paragraph in resident_paragraphs[a1:a2]:
-                diff_html += f'<div class="del">{paragraph}</div><div class="sp"/></div>'
+                diff_html += f'<div class="para del">[Deleted: {paragraph}]</div>'
         elif opcode == 'replace':
             res_paragraphs = resident_paragraphs[a1:a2]
             att_paragraphs = attending_paragraphs[b1:b2]
-            # Pairwise word-level diff within replaced segments
             for res_paragraph, att_paragraph in zip(res_paragraphs, att_paragraphs):
                 word_matcher = difflib.SequenceMatcher(None, res_paragraph.split(), att_paragraph.split())
-                line = []
+                seg = []
                 for word_opcode, w_a1, w_a2, w_b1, w_b2 in word_matcher.get_opcodes():
                     if word_opcode == 'equal':
-                        line.append(" ".join(res_paragraph.split()[w_a1:w_a2]))
+                        seg.append(" ".join(res_paragraph.split()[w_a1:w_a2]))
                     elif word_opcode == 'replace':
-                        old = " ".join(res_paragraph.split()[w_a1:w_a2])
-                        new = " ".join(att_paragraph.split()[w_b1:w_b2])
-                        line.append(f'<span class="tok-del">{old}</span> <span class="tok-ins">{new}</span>')
+                        seg.append(
+                            '<span class="word del">' +
+                            " ".join(res_paragraph.split()[w_a1:w_a2]) +
+                            '</span> <span class="word ins">' +
+                            " ".join(att_paragraph.split()[w_b1:w_b2]) +
+                            '</span>'
+                        )
                     elif word_opcode == 'delete':
-                        old = " ".join(res_paragraph.split()[w_a1:w_a2])
-                        line.append(f'<span class="tok-del">{old}</span>')
+                        seg.append('<span class="word del">' + " ".join(res_paragraph.split()[w_a1:w_a2]) + '</span>')
                     elif word_opcode == 'insert':
-                        new = " ".join(att_paragraph.split()[w_b1:w_b2])
-                        line.append(f'<span class="tok-ins">{new}</span>')
-                diff_html += f'<div class="rep">{" ".join(line)}</div><div class="sp"/></div>'
+                        seg.append('<span class="word ins">' + " ".join(att_paragraph.split()[w_b1:w_b2]) + '</span>')
+                diff_html += f'<div class="para rep">{" ".join(seg)}</div>'
     return diff_html
 
 # ------------------------- OpenAI call --------------------------------
 def get_summary(case_text, custom_prompt, case_number):
     try:
         logger.info(f"Processing case {case_number} with model={MODEL_ID} using function calling.")
-
         response = client.responses.create(
             model=MODEL_ID,
             instructions=custom_prompt,
-            input=(
-                f"Case Number: {case_number}\n{case_text}"
-            ),
+            input=(f"Case Number: {case_number}\n{case_text}"),
             tools=RADIOLOGY_SUMMARY_TOOL,
             tool_choice={"type": "function", "name": "summarize_radiology_report"}
         )
@@ -315,15 +393,15 @@ def get_summary(case_text, custom_prompt, case_number):
                 break
 
         if parsed_json:
-            logger.info(f"Received and parsed function call for case {case_number}: OK")
+            logger.info(f"Function call parsed for case {case_number}.")
             return parsed_json
         else:
-            logger.error(f"Function call not found in response for case {case_number}")
+            logger.error(f"No function call in response for case {case_number}")
             return {"case_number": case_number, "error": "AI did not return the expected tool call."}
 
     except json.JSONDecodeError as e:
         logger.error(f"JSON parse failure for case {case_number}: {e!r}")
-        logger.debug(f"Raw arguments from model that failed to parse: {raw_arguments}")
+        logger.debug(f"Raw arguments: {raw_arguments}")
         return {"case_number": case_number, "error": "Invalid JSON in tool arguments from AI."}
     except NotFoundError as e:
         logger.error(f"[404] NotFound: {e.message}")
@@ -363,54 +441,35 @@ def process_cases(cases_data, custom_prompt, max_workers=8):
                 parsed_json = future.result() or {}
                 if 'score' not in parsed_json:
                     parsed_json['score'] = len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', []))
-                logger.info(f"Processed summary for case {case_num}: Score {parsed_json.get('score', 'N/A')}")
+                logger.info(f"Summary for case {case_num}: Score {parsed_json.get('score', 'N/A')}")
             except Exception as e:
                 logger.error(f"Error processing case {case_num}: {e}")
                 parsed_json = {"case_number": case_num, "error": f"Unhandled: {repr(e)}"}
             structured_output.append(parsed_json)
-    logger.info(f"Completed processing {len(structured_output)} summaries.")
+    logger.info(f"Completed {len(structured_output)} summaries.")
     return structured_output
 
 def extract_cases(text, custom_prompt):
     text = text.replace('\r\n', '\n').replace('\r', '\n')
-    logger.debug("Normalized line endings.")
-
     cases = re.split(r'(?m)^Case\s+(\d+)', text, flags=re.IGNORECASE)
-    logger.debug(f"SPLIT RESULT FOR CASES: {cases}")
-
-    logger.info(f"Total elements after split: {len(cases)}")
-    for idx, element in enumerate(cases):
-        logger.debug(f"Element {idx}: {element[:100]}{'...' if len(element) > 100 else ''}")
 
     cases_data, parsed_cases = [], []
 
     for i in range(1, len(cases), 2):
         case_num = cases[i]
         case_content = cases[i + 1].strip() if i + 1 < len(cases) else ""
-        logger.debug(f"Processing Case {case_num}:")
-        logger.debug(f"Case Content: {case_content[:200]}{'...' if len(case_content) > 200 else ''}")
 
-        regex = r'(?im)^\s*(Attending(?:\s+Report)?\s*:|Resident(?:\s+Report)?\s*:)' \
-                r'|(?im)^\s*(Attending)\b|(?im)^\s*(Resident)\b'
+        regex = r'(?im)^\s*(Attending(?:\s+Report)?\s*:|Resident(?:\s+Report)?\s*:)'
         parts = re.split(regex, case_content)
-        parts = [p for p in parts if p is not None]  # drop Nones from unmatched groups
-        logger.debug(f"Reports split: {parts}")
 
         label_to_text = {}
-        j = 0
-        while j < len(parts):
+        for j in range(1, len(parts), 2):
             label_raw = (parts[j] or "").strip().lower().replace(":", "")
-            # If label matched in alternate groups, normalize
-            if label_raw in ("attending", "attending report"):
-                content = (parts[j+1] if j+1 < len(parts) else "").strip()
+            content = (parts[j+1] if j+1 < len(parts) else "").strip()
+            if "attending" in label_raw:
                 label_to_text["attending"] = content
-                j += 2
-            elif label_raw in ("resident", "resident report"):
-                content = (parts[j+1] if j+1 < len(parts) else "").strip()
+            elif "resident" in label_raw:
                 label_to_text["resident"] = content
-                j += 2
-            else:
-                j += 1
 
         resident_report = label_to_text.get("resident", "")
         attending_report = label_to_text.get("attending", "")
@@ -421,12 +480,10 @@ def extract_cases(text, custom_prompt):
                 f"Attending Report: {normalize_text(attending_report)}"
             )
             cases_data.append((case_text, case_num))
-            logger.info(f"Prepared case {case_num} (normalized order: Resident → Attending).")
         else:
-            logger.warning(f"Case {case_num} does not contain both Attending and Resident Reports.")
+            logger.warning(f"Case {case_num} missing resident or attending report.")
 
     if not cases_data:
-        logger.warning("No valid cases found in the submitted text.")
         return parsed_cases
 
     ai_summaries = process_cases(cases_data, custom_prompt, max_workers=8)
@@ -447,13 +504,10 @@ def extract_cases(text, custom_prompt):
                 'summary': ai_summary if 'error' not in ai_summary else None,
                 'summary_error': ai_summary.get('error')
             })
-            logger.info(f"Assigned summary to case {case_num}.")
         except IndexError:
             logger.error(f"Error parsing reports for case {case_num}.")
             continue
 
-    logger.info(f"Total parsed_cases to return: {len(parsed_cases)}")
-    logger.debug(f"Parsed_cases: {json.dumps(parsed_cases, indent=2)}")
     return parsed_cases
 
 # ---------------------------- Web -------------------------------------
@@ -463,518 +517,613 @@ def index():
     case_data = []
 
     if request.method == 'POST':
-        text_block = request.form['report_text']
-        if not text_block.strip():
-            logger.warning("No report text provided.")
-        else:
-            logger.info("Starting case extraction and processing.")
+        text_block = request.form.get('report_text', '')
+        if text_block.strip():
             case_data = extract_cases(text_block, custom_prompt)
-            logger.info(f"Completed case extraction and processing. Number of cases extracted: {len(case_data)}")
-            logger.debug(f"Extracted case_data: {json.dumps(case_data, indent=2)}")
-
-    logger.info(f"Passing {len(case_data)} cases to the template.")
-    logger.debug(f"case_data being passed: {json.dumps(case_data, indent=2)}")
 
     template = """
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Radiology Report Diff & Summarizer</title>
-  <link rel="preconnect" href="https://cdn.jsdelivr.net"/>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"/>
-  <script src="https://unpkg.com/@dotlottie/player-component@2.7.12/dist/dotlottie-player.mjs" type="module"></script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Compare Revisions • Radiology</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
   <style>
-    :root{
-      --bg: #0b0f14;       /* deep slate */
-      --panel:#121824;     /* card bg */
-      --muted:#8aa0b5;     /* secondary text */
-      --text:#e6f0ff;      /* primary text */
-      --accent:#5ddcff;    /* cyan */
-      --accent-2:#a66bff;  /* purple */
-      --danger:#ff6b6b;    /* red */
-      --success:#14d39a;   /* green */
-      --warning:#ffcf5c;   /* yellow */
-      --chip:#1a2332;      /* chip bg */
+    :root {
+      --bg: #0f1115;
+      --panel: #171a21;
+      --panel-2: #1c2028;
+      --text: #e6e6e6;
+      --muted: #aeb4c0;
+      --primary: #4da3ff;
+      --primary-2: #2a84f2;
+      --green: #2bd47d;
+      --red: #ff6b6b;
+      --yellow: #ffd166;
+      --chip-major: #ff375f;
+      --chip-minor: #ffd166;
+      --chip-clar: #6ee7ff;
     }
-    html,body{background:var(--bg); color:var(--text);} 
-    .app-header{position:sticky; top:0; z-index:1040; backdrop-filter: blur(8px);}    
-    .app-header .bar{background:linear-gradient(90deg,var(--panel),#0e1420); border-bottom:1px solid #172033;}
-    .brand{font-weight:700; letter-spacing:.5px}
-    .brand .dot{color:var(--accent)}
-    .panel{background:var(--panel); border:1px solid #1b2a40; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.35)}
-    .chip{background:var(--chip); border:1px solid #223149; color:var(--text); border-radius:999px; padding:.25rem .6rem; display:inline-flex; align-items:center; gap:.35rem; font-size:.8rem}
-    .chip .dot{width:.5rem; height:.5rem; border-radius:999px; display:inline-block}
-    .chip.major .dot{background:var(--danger)}
-    .chip.minor .dot{background:var(--warning)}
-    .chip.clar .dot{background:var(--accent)}
-    .chip.score .dot{background:var(--accent-2)}
-    .toolbar{gap:.5rem}
-    .btn-ghost{background:transparent; color:var(--text); border:1px solid #223149}
-    .btn-ghost:hover{border-color:#2e3f5f; background:#0f1726}
-    .btn-accent{background:linear-gradient(90deg,var(--accent-2), var(--accent)); border:0; color:#05101c}
-    .sidebar{position:sticky; top:84px}
-    .search{background:#0e1523; border:1px solid #21324d; color:var(--text)}
-
-    /* Diff classes */
-    .diff-output{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:.95rem; line-height:1.5; padding:1rem; border-radius:12px; background:#0b1220; border:1px solid #1a2742}
-    .diff-controls{display:flex; gap:.5rem; flex-wrap:wrap}
-    .eq{opacity:.7; color:var(--muted)}
-    .ins{background:rgba(20,211,154,.12); border-left:3px solid var(--success); padding:.35rem .6rem; border-radius:6px; margin:.2rem 0}
-    .del{background:rgba(255,107,107,.12); border-left:3px solid var(--danger); padding:.35rem .6rem; border-radius:6px; margin:.2rem 0; text-decoration: line-through; opacity:.9}
-    .rep{background:linear-gradient(90deg, rgba(166,107,255,.08), rgba(93,220,255,.06)); border-left:3px solid var(--accent-2); padding:.35rem .6rem; border-radius:6px; margin:.2rem 0}
-    .tok-del{background:rgba(255,107,107,.18); border-radius:4px; padding:0 .2rem; text-decoration: line-through}
-    .tok-ins{background:rgba(20,211,154,.18); border-radius:4px; padding:0 .2rem}
-    .sp{height:.35rem}
-
-    /* Case card */
-    .case-card{background:var(--panel); border:1px solid #1b2a40; border-radius:16px; padding:1rem; margin-bottom:1rem}
-    .case-head{display:flex; align-items:center; justify-content:space-between; gap:1rem}
-    .case-meta{display:flex; align-items:center; gap:.5rem; flex-wrap:wrap}
-    .badge-soft{background:#0e1523; border:1px solid #21324d; color:var(--text)}
-
-    .progress{height:.4rem; background:#0d1422}
-    .progress-bar{background:linear-gradient(90deg,var(--accent-2), var(--accent))}
-
-    .nav-pills .nav-link{color:var(--text); border:1px solid #223149}
-    .nav-pills .nav-link.active{background:linear-gradient(90deg,var(--accent-2),var(--accent)); color:#05101c; border:0}
-
-    a, a:hover{color:var(--accent)}
-    .link-muted{color:var(--muted)}
-
-    .kbd{border:1px solid #2b3d5e; background:#0e1523; padding:.15rem .4rem; border-radius:6px; font-size:.8rem}
-
-    .toast-container{z-index: 2000}
+    html, body { height: 100%; }
+    body {
+      background: radial-gradient(1200px 800px at 10% -30%, #141826 10%, transparent 40%) no-repeat,
+                  radial-gradient(1200px 800px at 110% 130%, #121620 5%, transparent 40%) no-repeat,
+                  var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+    }
+    a { color: var(--primary); text-decoration: none; }
+    a:hover { color: var(--primary-2); }
+    .appbar {
+      position: sticky; top: 0; z-index: 20;
+      backdrop-filter: blur(8px);
+      background: color-mix(in srgb, var(--panel) 82%, transparent);
+      border-bottom: 1px solid #2a2f3a;
+    }
+    .appbar .btn { border-radius: 10px; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid #2a2f3a;
+      border-radius: 14px;
+    }
+    .panel-2 {
+      background: var(--panel-2);
+      border: 1px solid #2a2f3a;
+      border-radius: 12px;
+    }
+    .sidebar {
+      height: calc(100vh - 80px);
+      position: sticky; top: 80px; overflow: auto; padding-bottom: 1rem;
+    }
+    .case-nav a {
+      display: flex; align-items: center; gap: .5rem;
+      padding: .5rem .6rem; border-radius: 10px;
+      color: var(--text);
+    }
+    .case-nav a:hover { background: #222735; }
+    .kbd {
+      border: 1px solid #3a4252; border-bottom-color: #2e3543;
+      background: #1a1f2b; padding: .15rem .35rem; border-radius: 6px; font-size: .8rem; color: var(--muted);
+    }
+    textarea.form-control, textarea, input, .form-control {
+      background: #0f131b !important; color: var(--text) !important; border: 1px solid #2a2f3a !important;
+    }
+    textarea.form-control:focus, .form-control:focus {
+      box-shadow: 0 0 0 .25rem rgba(77,163,255,.15);
+      background: #0f131b !important; color: var(--text) !important;
+    }
+    .badge-score { background: #1e2a3d; color: #b7d3ff; border: 1px solid #2e405e; }
+    .chip { border-radius: 999px; padding: .2rem .55rem; font-weight: 600; border: 1px solid #334155; }
+    .chip.major { background: color-mix(in srgb, var(--chip-major) 18%, transparent); color: #ffc4cf; border-color: #5c2034; }
+    .chip.minor { background: color-mix(in srgb, var(--chip-minor) 18%, transparent); color: #fff2c4; border-color: #5c4a20; }
+    .chip.clar { background: color-mix(in srgb, var(--chip-clar) 18%, transparent); color: #c4f4ff; border-color: #20545c; }
+    .progress { background: #1b2330; height: 8px; border-radius: 10px; }
+    .progress-bar { background: linear-gradient(90deg, var(--primary), #7ab8ff); }
+    .tabs { border-bottom: 1px solid #2a2f3a; }
+    .tabs .nav-link { color: var(--muted); }
+    .tabs .nav-link.active { color: var(--text); background: #1a202c; border-color: #2a2f3a #2a2f3a #1a202c; }
+    .para { padding: .4rem .6rem; border-left: 3px solid transparent; border-radius: 8px; margin-bottom: .5rem; background: #0f131b; }
+    .para.equal { border-left-color: #2b364a; }
+    .para.ins { border-left-color: var(--green); background: rgba(43,212,125,.06); }
+    .para.del { border-left-color: var(--red); background: rgba(255,107,107,.06); text-decoration: line-through; opacity: .85; }
+    .para.rep { border-left-color: #7ab8ff; background: rgba(122,184,255,.06); }
+    .word.ins { color: var(--green); font-weight: 600; }
+    .word.del { color: var(--red); text-decoration: line-through; }
+    .toaster {
+      position: fixed; right: 18px; bottom: 18px; z-index: 50;
+      background: #1c2432; border: 1px solid #2a3547; color: #d7e3ff; padding: .65rem .8rem; border-radius: 10px; display:none;
+    }
+    .btn-ghost { background: #121722; border: 1px solid #273043; color: #c6d4f2; }
+    .btn-ghost:hover { background: #161c2a; color: #fff; }
+    .loading-bar { position: fixed; top: 0; left: 0; height: 3px; width: 0; background: linear-gradient(90deg, var(--primary), #7ab8ff); z-index: 1000; transition: width .3s ease; }
+    .case-card { scroll-margin-top: 90px; }
   </style>
 </head>
 <body>
-  <!-- Header / Global toolbar -->
-  <div class="app-header">
-    <div class="bar py-2">
-      <div class="container d-flex align-items-center justify-content-between">
-        <div class="brand h4 m-0">Compare<span class="dot">•</span>Revisions</div>
-        <div class="toolbar d-flex">
-          <button class="btn btn-ghost" id="btnExport" title="Download JSON of all summaries">Export JSON</button>
-          <button class="btn btn-ghost" id="btnHelp" data-bs-toggle="modal" data-bs-target="#helpModal">Hotkeys</button>
-          <a class="btn btn-accent" href="#form">New Analysis</a>
+  <div class="loading-bar" id="loadingBar"></div>
+
+  <!-- App Bar -->
+  <div class="appbar border-bottom">
+    <div class="container-fluid py-2">
+      <div class="d-flex align-items-center gap-2">
+        <div class="d-flex align-items-center gap-2 me-auto">
+          <i class="bi bi-activity text-primary fs-4"></i>
+          <strong>Compare Revisions</strong>
+          <span class="text-secondary small ms-2">Radiology Resident ↔ Attending</span>
         </div>
+
+        <div class="d-none d-md-flex align-items-center gap-2">
+          <span class="kbd">J</span><span class="text-secondary small">next</span>
+          <span class="kbd">K</span><span class="text-secondary small">prev</span>
+          <span class="kbd">1–4</span><span class="text-secondary small">tabs</span>
+          <span class="kbd">F</span><span class="text-secondary small">search</span>
+          <span class="kbd">S</span><span class="text-secondary small">sort</span>
+          <span class="kbd">G</span><span class="text-secondary small">top</span>
+        </div>
+
+        <button class="btn btn-primary btn-sm" form="reportForm">
+          <i class="bi bi-lightning-charge"></i> Run
+        </button>
+        <button class="btn btn-ghost btn-sm" id="downloadAllBtn" type="button">
+          <i class="bi bi-download"></i> Download JSON
+        </button>
       </div>
     </div>
   </div>
 
-  <div class="container mt-4">
-    <!-- Input form -->
-    <div id="form" class="panel p-3 p-md-4 mb-4">
-      <form method="POST" id="reportForm">
-        <div class="row g-3 align-items-end">
-          <div class="col-12">
-            <label for="report_text" class="form-label">Paste your reports block</label>
-            <textarea id="report_text" name="report_text" rows="8" class="form-control search" placeholder="Case 123\nResident: ...\nAttending: ...\n\nCase 124\n...">{{ request.form.get('report_text', '') }}</textarea>
-          </div>
-          <div class="col-12">
-            <label for="custom_prompt" class="form-label">Optional: Customize model instructions</label>
-            <textarea id="custom_prompt" name="custom_prompt" rows="5" class="form-control search">{{ custom_prompt }}</textarea>
-          </div>
-          <div class="col-12 d-flex gap-2 align-items-center">
-            <button type="submit" class="btn btn-accent">Compare & Summarize</button>
-            <dotlottie-player id="loadingAnimation" src="https://lottie.host/817661a8-2608-4435-89a5-daa620a64c36/WtsFI5zdEK.lottie" background="transparent" speed="1" style="width: 56px; height: 56px; display:none" loop autoplay></dotlottie-player>
-            <span class="link-muted">Tip: <span class="kbd">J</span>/<span class="kbd">K</span> to jump cases; <span class="kbd">1</span>/<span class="kbd">2</span>/<span class="kbd">3</span>/<span class="kbd">4</span> switch tabs</span>
-          </div>
-        </div>
-      </form>
-    </div>
-
-    {% if case_data %}
+  <div class="container-fluid mt-3">
     <div class="row g-3">
-      <!-- Sidebar Filters -->
-      <div class="col-lg-3">
-        <div class="panel p-3 sidebar">
-          <div class="d-flex align-items-center justify-content-between mb-2">
-            <div class="h5 m-0">Filters</div>
-            <button class="btn btn-sm btn-ghost" id="btnReset">Reset</button>
-          </div>
-          <input class="form-control search mb-2" id="searchInput" placeholder="Search text or case #"/>
+      <!-- Left: Input -->
+      <div class="col-12 col-xl-6">
+        <div class="panel p-3">
+          <form method="POST" id="reportForm">
+            <div class="row g-3">
+              <div class="col-12">
+                <label class="form-label">Paste your reports block</label>
+                <textarea id="report_text" name="report_text" class="form-control" rows="10" placeholder="Case 1
+Resident:
+...
+Attending:
+...
 
-          <div class="mb-2 d-grid gap-2">
-            <button class="btn btn-ghost" data-filter="majors">Has Major</button>
-            <button class="btn btn-ghost" data-filter="minors">Has Minor</button>
-            <button class="btn btn-ghost" data-filter="clar">Has Clarifications</button>
-            <button class="btn btn-ghost" data-filter="none">No Findings</button>
-          </div>
-
-          <div class="mb-3">
-            <label class="form-label">Min Score</label>
-            <input type="range" class="form-range" min="0" max="30" step="1" id="minScoreRange"/>
-            <div class="d-flex justify-content-between small"><span>0</span><span id="minScoreVal">0</span></div>
-          </div>
-
-          <div class="mb-3">
-            <label class="form-label">Sort By</label>
-            <select id="sortSelect" class="form-select search">
-              <option value="case_number">Case Number</option>
-              <option value="percentage_change">% Change</option>
-              <option value="summary_score">Summary Score</option>
-            </select>
-          </div>
-
-          <div class="form-check form-switch mb-2">
-            <input class="form-check-input" type="checkbox" role="switch" id="toggleOnlyDiff"/>
-            <label class="form-check-label" for="toggleOnlyDiff">Show only differences</label>
-          </div>
-
-          <div class="form-check form-switch">
-            <input class="form-check-input" type="checkbox" role="switch" id="toggleWrap" checked/>
-            <label class="form-check-label" for="toggleWrap">Wrap long lines</label>
-          </div>
-
-          <hr/>
-          <div class="h6">Quick Jump</div>
-          <div id="caseNav" class="small"></div>
+Case 2
+Resident:
+...
+Attending:
+...">{{ request.form.get('report_text', '') }}</textarea>
+              </div>
+              <div class="col-12">
+                <label class="form-label">Custom prompt (optional)</label>
+                <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="6" placeholder="Paste your system/developer prompt here (optional).">{{ custom_prompt }}</textarea>
+              </div>
+              <div class="col-12 d-flex gap-2 flex-wrap">
+                <button class="btn btn-primary">
+                  <i class="bi bi-lightning-charge"></i> Compare & Summarize
+                </button>
+                <button class="btn btn-ghost" type="button" id="clearBtn">
+                  <i class="bi bi-eraser"></i> Clear
+                </button>
+                <button class="btn btn-ghost" type="button" id="demoBtn">
+                  <i class="bi bi-journal-text"></i> Load Demo
+                </button>
+              </div>
+            </div>
+          </form>
         </div>
       </div>
 
-      <!-- Main Content -->
-      <div class="col-lg-9">
-        <div class="d-flex flex-wrap gap-2 mb-2">
-          <span class="chip major"><span class="dot"></span><span id="countMajors">0</span> major</span>
-          <span class="chip minor"><span class="dot"></span><span id="countMinors">0</span> minor</span>
-          <span class="chip clar"><span class="dot"></span><span id="countClars">0</span> clarifications</span>
-          <span class="chip score"><span class="dot"></span>avg score: <span id="avgScore">0</span></span>
+      <!-- Right: Results split (sidebar + main) -->
+      <div class="col-12 col-xl-6">
+        <div class="row g-3">
+          <div class="col-12 col-lg-5">
+            <div class="panel p-3 sidebar">
+              <div class="d-flex align-items-center gap-2 mb-2">
+                <i class="bi bi-list-stars text-primary"></i>
+                <strong>Cases</strong>
+                <span class="ms-auto badge badge-score" id="caseCountBadge">0</span>
+              </div>
+              <input id="searchInput" class="form-control form-control-sm mb-2" placeholder="Search text or Case # (press F)"/>
+              <div class="d-flex flex-wrap gap-2 mb-2">
+                <button class="btn btn-ghost btn-sm" id="sortCaseBtn" data-mode="number"><i class="bi bi-sort-numeric-down"></i> Sort</button>
+                <button class="btn btn-ghost btn-sm" id="filterMajorsBtn"><i class="bi bi-exclamation-octagon"></i> Majors only</button>
+                <button class="btn btn-ghost btn-sm" id="filterErrorsBtn"><i class="bi bi-bug"></i> Errors only</button>
+                <button class="btn btn-ghost btn-sm" id="expandAllBtn"><i class="bi bi-arrows-expand"></i> Expand all</button>
+                <button class="btn btn-ghost btn-sm" id="collapseAllBtn"><i class="bi bi-arrows-collapse"></i> Collapse all</button>
+              </div>
+              <div id="aggregateBlock" class="panel-2 p-2 mb-2 d-none">
+                <div class="d-flex align-items-center gap-2 mb-1">
+                  <span class="chip major">Major <span id="aggMajor">0</span></span>
+                  <span class="chip minor">Minor <span id="aggMinor">0</span></span>
+                  <span class="chip clar">Clar <span id="aggClar">0</span></span>
+                </div>
+                <div class="progress">
+                  <div class="progress-bar" id="aggBar" style="width: 0%"></div>
+                </div>
+              </div>
+              <div id="caseNav" class="case-nav"></div>
+            </div>
+          </div>
+
+          <div class="col-12 col-lg-7">
+            <div id="resultsPanel" class="panel p-2">
+              <div id="emptyState" class="text-center text-secondary p-5">
+                <i class="bi bi-arrow-up-right-square text-primary fs-1 d-block mb-2"></i>
+                <div class="mb-1">Paste reports and click <strong>Compare &amp; Summarize</strong>.</div>
+                <div class="small">Keyboard: J/K to move, 1–4 to switch tabs.</div>
+              </div>
+              <div id="caseContainer" class="d-none"></div>
+            </div>
+          </div>
         </div>
-        <div id="caseContainer"></div>
       </div>
+
     </div>
-    {% endif %}
   </div>
 
-  <!-- Help Modal -->
-  <div class="modal fade" id="helpModal" tabindex="-1">
-    <div class="modal-dialog modal-dialog-centered">
-      <div class="modal-content" style="background:var(--panel); color:var(--text); border:1px solid #1b2a40">
-        <div class="modal-header">
-          <h5 class="modal-title">Hotkeys</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-        </div>
-        <div class="modal-body">
-          <p><span class="kbd">J</span>/<span class="kbd">K</span> — Next/Prev case (visible set)</p>
-          <p><span class="kbd">1</span> Summary • <span class="kbd">2</span> Diff • <span class="kbd">3</span> Resident • <span class="kbd">4</span> Attending</p>
-          <p><span class="kbd">/</span> — Focus search • <span class="kbd">s</span> — Sort menu</p>
-          <p><span class="kbd">c</span> — Copy summary JSON of focused case</p>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="toast-container position-fixed top-0 end-0 p-3">
-    <div id="toast" class="toast align-items-center text-bg-dark border-0" role="alert" aria-live="assertive" aria-atomic="true">
-      <div class="d-flex">
-        <div class="toast-body">Copied!</div>
-        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
-      </div>
-    </div>
-  </div>
+  <div class="toaster" id="toaster"></div>
 
   <script>
     let caseData = {{ case_data | tojson }};
+    const navEl = document.getElementById('caseNav');
+    const containerEl = document.getElementById('caseContainer');
+    const emptyStateEl = document.getElementById('emptyState');
+    const caseCountBadge = document.getElementById('caseCountBadge');
+    const toaster = document.getElementById('toaster');
+    const loadingBar = document.getElementById('loadingBar');
+    const aggregateBlock = document.getElementById('aggregateBlock');
+    const aggMajor = document.getElementById('aggMajor');
+    const aggMinor = document.getElementById('aggMinor');
+    const aggClar = document.getElementById('aggClar');
+    const aggBar = document.getElementById('aggBar');
 
-    const state = {
-      filter: null, // majors|minors|clar|none
-      minScore: Number(localStorage.getItem('minScore')||0),
-      sort: localStorage.getItem('sort')||'case_number',
-      onlyDiff: localStorage.getItem('onlyDiff')==='true',
-      wrap: (localStorage.getItem('wrap')||'true')==='true',
-      search: ''
-    };
+    // ---------- Loading bar ----------
+    const startLoading = () => { loadingBar.style.width = '35%'; };
+    const midLoading = () => { loadingBar.style.width = '70%'; };
+    const endLoading = () => { loadingBar.style.width = '100%'; setTimeout(()=>{ loadingBar.style.width='0%'; }, 400); };
 
-    const qs = (s, el=document)=>el.querySelector(s);
-    const qsa = (s, el=document)=>[...el.querySelectorAll(s)];
-
-    function applyPrefsUI(){
-      if(!caseData || caseData.length===0) return;
-      const minRange = qs('#minScoreRange');
-      minRange.value = state.minScore; qs('#minScoreVal').textContent = state.minScore;
-      qs('#sortSelect').value = state.sort;
-      qs('#toggleOnlyDiff').checked = state.onlyDiff;
-      qs('#toggleWrap').checked = state.wrap;
+    // ---------- Toast ----------
+    function toast(msg, ms=1800) {
+      toaster.textContent = msg;
+      toaster.style.display = 'block';
+      setTimeout(()=>{ toaster.style.display = 'none'; }, ms);
     }
 
-    function persistPrefs(){
-      localStorage.setItem('minScore', state.minScore);
-      localStorage.setItem('sort', state.sort);
-      localStorage.setItem('onlyDiff', state.onlyDiff);
-      localStorage.setItem('wrap', state.wrap);
+    // ---------- Navigation render ----------
+    function formatChipCounts(s) {
+      const majors = (s?.major_findings?.length)||0;
+      const minors = (s?.minor_findings?.length)||0;
+      const clar = (s?.clarifications?.length)||0;
+      return `
+        <span class="chip major">M ${majors}</span>
+        <span class="chip minor">m ${minors}</span>
+        <span class="chip clar">c ${clar}</span>
+      `;
     }
 
-    function sortCases(){
-      if(state.sort==='case_number'){
-        caseData.sort((a,b)=> parseInt(a.case_num) - parseInt(b.case_num));
-      } else if(state.sort==='percentage_change'){
-        caseData.sort((a,b)=> (b.percentage_change||0) - (a.percentage_change||0));
-      } else if(state.sort==='summary_score'){
-        caseData.sort((a,b)=> ((b.summary&&b.summary.score)||0) - ((a.summary&&a.summary.score)||0));
-      }
-    }
-
-    function filterSet(){
-      return caseData.filter(c=>{
-        // score gate
+    function renderNav(list) {
+      navEl.innerHTML = '';
+      list.forEach(c => {
         const score = (c.summary && c.summary.score) || 0;
-        if(score < state.minScore) return false;
-        // text / case search
-        const s = state.search.trim().toLowerCase();
-        if(s){
-          const blob = `${c.case_num} ${c.resident_report} ${c.attending_report} ${JSON.stringify(c.summary||{})}`.toLowerCase();
-          if(!blob.includes(s)) return false;
-        }
-        // category filter
-        if(!state.filter) return true;
-        const hasMaj = c.summary && c.summary.major_findings && c.summary.major_findings.length>0;
-        const hasMin = c.summary && c.summary.minor_findings && c.summary.minor_findings.length>0;
-        const hasClar = c.summary && c.summary.clarifications && c.summary.clarifications.length>0;
-        if(state.filter==='majors') return hasMaj;
-        if(state.filter==='minors') return hasMin;
-        if(state.filter==='clar') return hasClar;
-        if(state.filter==='none') return !hasMaj && !hasMin && !hasClar;
-        return true;
+        const link = document.createElement('a');
+        link.href = '#case' + c.case_num;
+        link.innerHTML = `
+          <div class="d-flex w-100 align-items-center">
+            <div class="me-auto">
+              <strong>Case ${c.case_num}</strong>
+              <div class="small text-secondary">Δ ${c.percentage_change}%</div>
+            </div>
+            <span class="badge badge-score me-2">Score ${score}</span>
+            <div class="d-none d-xl-block">${formatChipCounts(c.summary)}</div>
+          </div>
+        `;
+        navEl.appendChild(link);
       });
+      caseCountBadge.textContent = list.length;
     }
 
-    function summarizeTotals(data){
-      let majors=0, minors=0, clars=0, scores=[];
-      data.forEach(c=>{
-        if(c.summary){
-          majors += (c.summary.major_findings||[]).length;
-          minors += (c.summary.minor_findings||[]).length;
-          clars  += (c.summary.clarifications||[]).length;
-          scores.push(c.summary.score||0);
-        }
-      });
-      const avg = scores.length? (scores.reduce((a,b)=>a+b,0)/scores.length).toFixed(1) : 0;
-      qs('#countMajors').textContent = majors;
-      qs('#countMinors').textContent = minors;
-      qs('#countClars').textContent = clars;
-      qs('#avgScore').textContent = avg;
-    }
-
-    function badge(text){
-      return `<span class="badge rounded-pill badge-soft">${text}</span>`
-    }
-
-    function pill(label, value, cls='chip'){
-      return `<span class="${cls}"><span class="dot"></span>${label}: ${value}</span>`
-    }
-
-    function tabId(cn, name){ return `${name}${cn}` }
-
-    function caseCard(c){
-      const score = (c.summary && c.summary.score) || 0;
-      const majors = (c.summary && c.summary.major_findings||[]).length;
-      const minors = (c.summary && c.summary.minor_findings||[]).length;
-      const clars  = (c.summary && c.summary.clarifications||[]).length;
-      const pct = Math.min(100, Math.max(0, c.percentage_change||0));
-
-      const tabs = `
-      <ul class="nav nav-pills mb-2" role="tablist" data-case="${c.case_num}">
-        <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#${tabId(c.case_num,'summary')}" type="button" role="tab">Summary</button></li>
-        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#${tabId(c.case_num,'combined')}" type="button" role="tab">Diff</button></li>
-        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#${tabId(c.case_num,'resident')}" type="button" role="tab">Resident</button></li>
-        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#${tabId(c.case_num,'attending')}" type="button" role="tab">Attending</button></li>
-        <li class="ms-auto"><button class="btn btn-sm btn-ghost" data-copy="${c.case_num}">Copy JSON</button></li>
-      </ul>`;
-
-      const diffControls = `
-        <div class="diff-controls mb-2">
-          <div class="form-check form-check-inline">
-            <input class="form-check-input only-eq" type="checkbox" ${state.onlyDiff?'checked':''} data-case="${c.case_num}">
-            <label class="form-check-label">Hide unchanged</label>
+    // ---------- Case card ----------
+    function caseCardHTML(c) {
+      if (!c.summary) {
+        return `
+          <div id="case${c.case_num}" class="case-card panel-2 p-3 mb-3">
+            <div class="d-flex align-items-center gap-2">
+              <strong>Case ${c.case_num}</strong>
+              <span class="ms-2 text-danger"><i class="bi bi-bug"></i> ${c.summary_error || 'Unable to generate summary.'}</span>
+            </div>
+            <div class="text-secondary small mt-1">Δ ${c.percentage_change}% change</div>
           </div>
-          <div class="form-check form-check-inline">
-            <input class="form-check-input wrap" type="checkbox" ${state.wrap?'checked':''} data-case="${c.case_num}">
-            <label class="form-check-label">Wrap lines</label>
-          </div>
-        </div>`;
+        `;
+      }
 
-      const summaryBlock = c.summary ? `
-        <div class="p-2">
-          <div class="mb-2 d-flex flex-wrap gap-2">
-            ${pill('majors', majors, 'chip major')}
-            ${pill('minors', minors, 'chip minor')}
-            ${pill('clar', clars, 'chip clar')}
-            ${pill('score', score, 'chip score')}
-          </div>
-          ${ majors ? `<div class="mb-2"><strong>Major Findings</strong><ul>${c.summary.major_findings.map(f=>`<li>${f}</li>`).join('')}</ul></div>`:'' }
-          ${ minors ? `<div class="mb-2"><strong>Minor Findings</strong><ul>${c.summary.minor_findings.map(f=>`<li>${f}</li>`).join('')}</ul></div>`:'' }
-          ${ clars ? `<div class="mb-2"><strong>Clarifications</strong><ul>${c.summary.clarifications.map(f=>`<li>${f}</li>`).join('')}</ul></div>`:'' }
-        </div>` : `<div class="text-danger">${c.summary_error || 'Unable to generate summary for this case.'}</div>`;
+      const s = c.summary;
+      const majors = s.major_findings || [];
+      const minors = s.minor_findings || [];
+      const clar = s.clarifications || [];
+      const total = majors.length + minors.length + clar.length;
+      const pctMajor = total ? Math.round((majors.length/total)*100) : 0;
+
+      const majorsList = majors.length ? `<ul class="mb-0">${majors.map(x=>`<li>${x}</li>`).join('')}</ul>` : '<div class="text-secondary small">None</div>';
+      const minorsList = minors.length ? `<ul class="mb-0">${minors.map(x=>`<li>${x}</li>`).join('')}</ul>` : '<div class="text-secondary small">None</div>';
+      const clarList = clar.length ? `<ul class="mb-0">${clar.map(x=>`<li>${x}</li>`).join('')}</ul>` : '<div class="text-secondary small">None</div>';
 
       return `
-      <article class="case-card" id="case${c.case_num}" tabindex="0" data-case="${c.case_num}">
-        <div class="case-head">
-          <div class="h5 m-0">Case ${c.case_num}</div>
-          <div class="case-meta">
-            ${badge(pct + '% change')}
-            ${badge('score ' + score)}
+        <div id="case${c.case_num}" class="case-card panel-2 p-3 mb-3">
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <strong class="me-2">Case ${c.case_num}</strong>
+            <span class="badge badge-score">Score ${s.score ?? 0}</span>
+            <span class="ms-2 text-secondary small">Δ ${c.percentage_change}%</span>
+            <span class="ms-auto d-flex gap-2">
+              <button class="btn btn-ghost btn-sm" onclick='copyJSON(${JSON.stringify(JSON.stringify(s))})'><i class="bi bi-clipboard"></i> Copy JSON</button>
+              <button class="btn btn-ghost btn-sm" data-toggle="collapse" data-target="#body${c.case_num}" onclick="toggleCollapse('${c.case_num}')">
+                <i class="bi bi-arrows-collapse"></i> Toggle
+              </button>
+            </span>
+          </div>
+
+          <div class="d-flex gap-2 mt-2">
+            <span class="chip major">Major ${majors.length}</span>
+            <span class="chip minor">Minor ${minors.length}</span>
+            <span class="chip clar">Clar ${clar.length}</span>
+          </div>
+
+          <div class="progress my-2" title="${pctMajor}% of items are major">
+            <div class="progress-bar" style="width: ${pctMajor}%"></div>
+          </div>
+
+          <div id="body${c.case_num}">
+            <ul class="nav nav-tabs tabs mt-2" role="tablist">
+              <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="tab-sum-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-sum-${c.case_num}" type="button" role="tab">Summary</button>
+              </li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link" id="tab-combo-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-combo-${c.case_num}" type="button" role="tab">Combined Diff</button>
+              </li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link" id="tab-res-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-res-${c.case_num}" type="button" role="tab">Resident</button>
+              </li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link" id="tab-att-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-att-${c.case_num}" type="button" role="tab">Attending</button>
+              </li>
+            </ul>
+
+            <div class="tab-content p-2">
+              <div class="tab-pane fade show active" id="tab-pane-sum-${c.case_num}" role="tabpanel" tabindex="0">
+                <div class="row g-2">
+                  <div class="col-12 col-md-4">
+                    <div class="panel p-2 h-100">
+                      <div class="d-flex align-items-center gap-2 mb-2"><i class="bi bi-exclamation-octagon text-danger"></i><strong>Major</strong></div>
+                      ${majorsList}
+                    </div>
+                  </div>
+                  <div class="col-12 col-md-4">
+                    <div class="panel p-2 h-100">
+                      <div class="d-flex align-items-center gap-2 mb-2"><i class="bi bi-info-circle text-warning"></i><strong>Minor</strong></div>
+                      ${minorsList}
+                    </div>
+                  </div>
+                  <div class="col-12 col-md-4">
+                    <div class="panel p-2 h-100">
+                      <div class="d-flex align-items-center gap-2 mb-2"><i class="bi bi-pencil-square text-info"></i><strong>Clarifications</strong></div>
+                      ${clarList}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="tab-pane fade" id="tab-pane-combo-${c.case_num}" role="tabpanel" tabindex="0">
+                <div class="panel p-2">
+                  ${c.diff}
+                </div>
+              </div>
+
+              <div class="tab-pane fade" id="tab-pane-res-${c.case_num}" role="tabpanel" tabindex="0">
+                <div class="panel p-2"><pre class="mb-0">${escapeHTML(c.resident_report)}</pre></div>
+              </div>
+              <div class="tab-pane fade" id="tab-pane-att-${c.case_num}" role="tabpanel" tabindex="0">
+                <div class="panel p-2"><pre class="mb-0">${escapeHTML(c.attending_report)}</pre></div>
+              </div>
+            </div>
           </div>
         </div>
-        <div class="progress my-2" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}">
-          <div class="progress-bar" style="width:${pct}%"></div>
-        </div>
-        ${tabs}
-        <div class="tab-content">
-          <div class="tab-pane fade show active" id="${tabId(c.case_num,'summary')}" role="tabpanel">${summaryBlock}</div>
-          <div class="tab-pane fade" id="${tabId(c.case_num,'combined')}" role="tabpanel">
-            ${diffControls}
-            <div class="diff-output ${state.wrap? 'text-wrap':'text-nowrap'}" data-diff="${c.case_num}">${c.diff}</div>
-          </div>
-          <div class="tab-pane fade" id="${tabId(c.case_num,'resident')}" role="tabpanel"><div class="diff-output ${state.wrap? 'text-wrap':'text-nowrap'}"><pre class="m-0">${escapeHtml(c.resident_report)}</pre></div></div>
-          <div class="tab-pane fade" id="${tabId(c.case_num,'attending')}" role="tabpanel"><div class="diff-output ${state.wrap? 'text-wrap':'text-nowrap'}"><pre class="m-0">${escapeHtml(c.attending_report)}</pre></div></div>
-        </div>
-      </article>`;
+      `;
     }
 
-    function escapeHtml(str){
-      if(!str) return '';
-      return str
-        .replaceAll('&','&amp;')
-        .replaceAll('<','&lt;')
-        .replaceAll('>','&gt;');
-    }
+    // ---------- Rendering ----------
+    function renderAll(data) {
+      if (!data || data.length === 0) {
+        containerEl.classList.add('d-none');
+        emptyStateEl.classList.remove('d-none');
+        renderNav([]);
+        aggregateBlock.classList.add('d-none');
+        return;
+      }
+      midLoading();
+      emptyStateEl.classList.add('d-none');
+      containerEl.classList.remove('d-none');
 
-    function displayNavigation(visible){
-      const nav = qs('#caseNav');
-      nav.innerHTML = '';
-      visible.forEach(c=>{
-        const score = (c.summary && c.summary.score) || 0;
-        nav.innerHTML += `<div><a href="#case${c.case_num}">Case ${c.case_num}</a> · ${c.percentage_change}% · ${score}</div>`;
-      })
-    }
-
-    function render(){
-      if(!caseData || caseData.length===0) return;
-      sortCases();
-      const visible = filterSet();
-      summarizeTotals(visible);
-      const container = qs('#caseContainer');
-      container.innerHTML = visible.map(c=>caseCard(c)).join('');
-      wirePerCaseControls();
-      displayNavigation(visible);
-      focusFirst();
-    }
-
-    function wirePerCaseControls(){
-      // Copy JSON buttons
-      qsa('[data-copy]').forEach(btn=>{
-        btn.addEventListener('click', ()=>{
-          const cn = btn.getAttribute('data-copy');
-          const obj = caseData.find(x=>String(x.case_num)===String(cn));
-          const jsonStr = JSON.stringify(obj.summary||{}, null, 2);
-          navigator.clipboard.writeText(jsonStr).then(()=>showToast('Copied summary JSON'));
-        })
+      // Aggregate
+      let M=0, m=0, c=0;
+      data.forEach(d => {
+        if (!d.summary) return;
+        M += (d.summary.major_findings||[]).length;
+        m += (d.summary.minor_findings||[]).length;
+        c += (d.summary.clarifications||[]).length;
       });
-      // Local toggles in Diff tab
-      qsa('.only-eq').forEach(ch=>{
-        ch.addEventListener('change', ()=>{
-          const cn = ch.getAttribute('data-case');
-          const diff = qs(`[data-diff="${cn}"]`);
-          if(ch.checked) qsa('.eq', diff).forEach(el=>el.style.display='none');
-          else qsa('.eq', diff).forEach(el=>el.style.display='');
-        })
-        // Apply initial state
-        if(state.onlyDiff){
-          const cn = ch.getAttribute('data-case');
-          const diff = qs(`[data-diff="${cn}"]`);
-          qsa('.eq', diff).forEach(el=>el.style.display='none');
+      const total = M+m+c;
+      aggMajor.textContent = M;
+      aggMinor.textContent = m;
+      aggClar.textContent = c;
+      aggBar.style.width = total ? Math.min(100, Math.round((M/Math.max(1,total))*100)) + '%' : '0%';
+      aggregateBlock.classList.remove('d-none');
+
+      // Cards
+      containerEl.innerHTML = data.map(caseCardHTML).join('');
+      renderNav(data);
+      endLoading();
+    }
+
+    // ---------- Sorting / Filtering / Search ----------
+    function sortBy(mode) {
+      if (mode === 'number') {
+        caseData.sort((a,b)=> parseInt(a.case_num)-parseInt(b.case_num));
+      } else if (mode === 'change') {
+        caseData.sort((a,b)=> (b.percentage_change||0)-(a.percentage_change||0));
+      } else if (mode === 'score') {
+        caseData.sort((a,b)=> ((b.summary?.score)||0)-((a.summary?.score)||0));
+      }
+    }
+    function filterMajorsOnly(list) {
+      return list.filter(x => (x.summary?.major_findings?.length||0) > 0);
+    }
+    function filterErrorsOnly(list) {
+      return list.filter(x => !x.summary);
+    }
+    function searchFilter(list, q) {
+      if (!q) return list;
+      q = q.toLowerCase();
+      return list.filter(c => {
+        if (String(c.case_num).includes(q)) return true;
+        if (c.resident_report?.toLowerCase().includes(q)) return true;
+        if (c.attending_report?.toLowerCase().includes(q)) return true;
+        const s = c.summary;
+        if (s) {
+          return JSON.stringify(s).toLowerCase().includes(q);
         }
-      });
-      qsa('.wrap').forEach(ch=>{
-        ch.addEventListener('change', ()=>{
-          const cn = ch.getAttribute('data-case');
-          const diff = qs(`[data-diff="${cn}"]`);
-          diff.classList.toggle('text-nowrap');
-          diff.classList.toggle('text-wrap');
-        })
+        return false;
       });
     }
 
-    // ---------------- Toolbar + Filters wiring ----------------
-    document.addEventListener('DOMContentLoaded', ()=>{
-      if(!caseData || caseData.length===0) return;
-
-      applyPrefsUI();
-      render();
-
-      // Global controls
-      qs('#minScoreRange').addEventListener('input', e=>{
-        state.minScore = Number(e.target.value); qs('#minScoreVal').textContent = state.minScore; persistPrefs(); render();
-      });
-      qs('#sortSelect').addEventListener('change', e=>{ state.sort = e.target.value; persistPrefs(); render(); });
-      qs('#toggleOnlyDiff').addEventListener('change', e=>{ state.onlyDiff = e.target.checked; persistPrefs(); render(); });
-      qs('#toggleWrap').addEventListener('change', e=>{ state.wrap = e.target.checked; persistPrefs(); render(); });
-      qs('#btnReset').addEventListener('click', ()=>{ state.filter=null; state.minScore=0; state.search=''; qs('#searchInput').value=''; applyPrefsUI(); persistPrefs(); render(); });
-      qs('#searchInput').addEventListener('input', e=>{ state.search = e.target.value; render(); });
-      qsa('[data-filter]').forEach(btn=> btn.addEventListener('click', ()=>{ state.filter = btn.getAttribute('data-filter'); render(); }));
-
-      // Export JSON of summaries
-      qs('#btnExport').addEventListener('click', ()=>{
-        const payload = caseData.map(c=>({case_number:c.case_num, summary:c.summary, error:c.summary_error}));
-        const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = 'summaries.json'; a.click();
-        URL.revokeObjectURL(url);
-      });
-
-      // Loading animation
-      qs('#reportForm').addEventListener('submit', ()=>{ qs('#loadingAnimation').style.display='block'; });
-
-      // Hotkeys
-      document.addEventListener('keydown', (e)=>{
-        if(e.key === '/') { e.preventDefault(); qs('#searchInput').focus(); return; }
-        if(e.key === 's') { e.preventDefault(); qs('#sortSelect').focus(); return; }
-        const focused = document.activeElement.closest('.case-card') || qsa('.case-card')[0];
-        if(!focused) return;
-        const idx = qsa('.case-card').indexOf? qsa('.case-card').indexOf(focused) : qsa('.case-card').findIndex(n=>n===focused);
-        if(e.key.toLowerCase()==='j') moveFocus(idx+1);
-        if(e.key.toLowerCase()==='k') moveFocus(idx-1);
-        if(['1','2','3','4'].includes(e.key)) switchTab(focused, e.key);
-        if(e.key==='c') copyFocusedJSON();
-      });
+    // ---------- Event wiring ----------
+    document.addEventListener('DOMContentLoaded', () => {
+      if (caseData && caseData.length) {
+        renderAll(caseData);
+      }
     });
 
-    function focusFirst(){
-      const first = qs('.case-card');
-      if(first){ first.focus(); }
+    document.getElementById('reportForm').addEventListener('submit', () => {
+      startLoading();
+    });
+
+    document.getElementById('clearBtn').addEventListener('click', () => {
+      document.getElementById('report_text').value = '';
+      document.getElementById('custom_prompt').value = '';
+      caseData = [];
+      renderAll(caseData);
+    });
+
+    document.getElementById('demoBtn').addEventListener('click', () => {
+      const demo = `Case 1
+Resident Report:
+No pneumothorax. Lungs clear.
+
+Attending Report:
+Small right apical pneumothorax. Mild bibasilar atelectasis.
+
+Case 2
+Resident Report:
+Possible segmental PE in RLL.
+
+Attending Report:
+No pulmonary embolism.`;
+      document.getElementById('report_text').value = demo;
+      toast('Demo loaded. Click Run.');
+    });
+
+    const searchInput = document.getElementById('searchInput');
+    searchInput.addEventListener('input', () => {
+      let list = [...caseData];
+      list = searchFilter(list, searchInput.value);
+      renderAll(list);
+    });
+
+    document.getElementById('sortCaseBtn').addEventListener('click', (e) => {
+      const btn = e.currentTarget;
+      const mode = btn.getAttribute('data-mode');
+      const modes = ['number', 'change', 'score'];
+      const idx = modes.indexOf(mode);
+      const next = modes[(idx+1)%modes.length];
+      btn.setAttribute('data-mode', next);
+      sortBy(next);
+      renderAll(caseData);
+      toast(`Sorted by ${next}`);
+    });
+
+    document.getElementById('filterMajorsBtn').addEventListener('click', () => {
+      const filtered = filterMajorsOnly(caseData);
+      renderAll(filtered);
+      toast('Showing cases with MAJOR findings');
+    });
+
+    document.getElementById('filterErrorsBtn').addEventListener('click', () => {
+      const filtered = filterErrorsOnly(caseData);
+      renderAll(filtered);
+      toast('Showing error cases only');
+    });
+
+    document.getElementById('expandAllBtn').addEventListener('click', () => {
+      document.querySelectorAll('[id^="body"]').forEach(el => el.style.display = '');
+    });
+    document.getElementById('collapseAllBtn').addEventListener('click', () => {
+      document.querySelectorAll('[id^="body"]').forEach(el => el.style.display = 'none');
+    });
+
+    document.getElementById('downloadAllBtn').addEventListener('click', () => {
+      const summaries = caseData.map(c => ({ case_number: c.case_num, summary: c.summary, error: c.summary_error || null }));
+      const blob = new Blob([JSON.stringify(summaries, null, 2)], {type: 'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'summaries.json'; a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    function toggleCollapse(id) {
+      const el = document.getElementById('body'+id);
+      if (!el) return;
+      el.style.display = (el.style.display === 'none') ? '' : 'none';
     }
-    function moveFocus(nextIndex){
-      const cards = qsa('.case-card');
-      if(cards.length===0) return;
-      const i = Math.max(0, Math.min(cards.length-1, nextIndex));
-      cards[i].scrollIntoView({behavior:'smooth', block:'center'});
-      setTimeout(()=>cards[i].focus(), 200);
+    window.toggleCollapse = toggleCollapse;
+
+    // ---------- Utils ----------
+    function copyJSON(text) {
+      navigator.clipboard.writeText(JSON.parse(text))
+        .then(()=> toast('JSON copied'))
+        .catch(()=> toast('Copy failed', 2000));
     }
-    function switchTab(card, key){
-      const map = { '1':'summary', '2':'combined', '3':'resident', '4':'attending' };
-      const tgt = qs(`[data-bs-target="#${map[key]}${card.getAttribute('data-case')}"]`, card);
-      if(tgt){ tgt.click(); }
+    window.copyJSON = copyJSON;
+
+    function escapeHTML(str) {
+      if (!str) return '';
+      return str.replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[m]));
     }
-    function copyFocusedJSON(){
-      const card = document.activeElement.closest('.case-card');
-      if(!card) return;
-      const cn = card.getAttribute('data-case');
-      const obj = caseData.find(x=>String(x.case_num)===String(cn));
-      const jsonStr = JSON.stringify(obj.summary||{}, null, 2);
-      navigator.clipboard.writeText(jsonStr).then(()=>showToast('Copied summary JSON'));
+    window.escapeHTML = escapeHTML; // for templated calls
+
+    // ---------- Keyboard shortcuts ----------
+    let currentIndex = 0;
+    function focusCase(i) {
+      const list = document.querySelectorAll('.case-card');
+      if (!list.length) return;
+      currentIndex = Math.max(0, Math.min(i, list.length-1));
+      list[currentIndex].scrollIntoView({behavior:'smooth', block:'start'});
+      list[currentIndex].classList.add('ring');
+      setTimeout(()=> list[currentIndex].classList.remove('ring'), 600);
+    }
+    function switchTab(n) {
+      const list = document.querySelectorAll('.case-card');
+      if (!list.length) return;
+      const id = list[currentIndex].id.replace('case','');
+      const tabIds = ['sum','combo','res','att'];
+      const which = tabIds[n-1] || 'sum';
+      const btn = document.getElementById(`tab-${which}-${id}`);
+      if (btn) btn.click();
     }
 
-    function showToast(msg){
-      qs('#toast .toast-body').textContent = msg;
-      const t = new bootstrap.Toast(qs('#toast'));
-      t.show();
-    }
-
-    // Helper to expose to template literal
-    window.escapeHtml = escapeHtml;
+    let gPressedOnce = false;
+    document.addEventListener('keydown', (e) => {
+      if (['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) {
+        // allow typing
+        if (e.key.toLowerCase()==='escape') document.activeElement.blur();
+        return;
+      }
+      if (e.key==='j' || e.key==='J') {
+        e.preventDefault(); focusCase(currentIndex+1);
+      } else if (e.key==='k' || e.key==='K') {
+        e.preventDefault(); focusCase(currentIndex-1);
+      } else if (['1','2','3','4'].includes(e.key)) {
+        e.preventDefault(); switchTab(parseInt(e.key,10));
+      } else if (e.key.toLowerCase()==='f') {
+        e.preventDefault(); document.getElementById('searchInput').focus();
+      } else if (e.key.toLowerCase()==='s') {
+        e.preventDefault(); document.getElementById('sortCaseBtn').click();
+      } else if (e.key.toLowerCase()==='g') {
+        if (gPressedOnce) {
+          window.scrollTo({top:0, behavior:'smooth'}); gPressedOnce=false;
+        } else {
+          gPressedOnce=true; setTimeout(()=> gPressedOnce=false, 450);
+        }
+      }
+    });
   </script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
@@ -982,6 +1131,6 @@ def index():
     """
     return render_template_string(template, case_data=case_data, custom_prompt=custom_prompt)
 
-# Local debugging only (Render uses gunicorn app:app)
+# Local debugging only
 if __name__ == '__main__':
     app.run(debug=True, port=5001)
