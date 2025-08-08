@@ -529,6 +529,7 @@ def index():
   <title>Compare Revisions • Radiology</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <script src="https://unpkg.com/@dotlottie/player-component@2.7.12/dist/dotlottie-player.mjs" type="module"></script>
   <style>
     :root{
       --bg:#0f1115;--panel:#171a21;--panel-2:#1c2028;--text:#e6e6e6;--muted:#aeb4c0;
@@ -629,8 +630,25 @@ def index():
     .kbd{border:1px solid #3a4252;border-bottom-color:#2e3543;background:#1a1f2b;padding:.15rem .35rem;border-radius:6px;font-size:.8rem;color:var(--muted)}
     .toaster{position:fixed;right:18px;bottom:18px;z-index:50;background:#1c2432;border:1px solid #2a3547;color:#d7e3ff;padding:.65rem .8rem;border-radius:10px;display:none}
   </style>
+  <style>
+    #loading-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.72); z-index: 2000;
+      display: none; /* toggled to flex in JS */
+      align-items: center; justify-content: center; flex-direction: column;
+    }
+    #loading-overlay p { color: #e6e6e6; margin-top: 1rem; font-size: 1.05rem; }
+  </style>
 </head>
 <body>
+  <div id="loading-overlay" aria-hidden="true">
+    <dotlottie-player
+      src="https://lottie.host/817661a8-2608-4435-89a5-daa620a64c36/WtsFI5zdEK.lottie"
+      background="transparent" speed="1"
+      style="width: 240px; height: 240px;" loop autoplay>
+    </dotlottie-player>
+    <p>Analyzing reports… this may take a moment.</p>
+  </div>
   <div class="loading-bar" id="loadingBar"></div>
 
   <!-- Top: Paste block at the top -->
@@ -765,6 +783,16 @@ Attending Report:
     const caseCountBadge = document.getElementById('caseCountBadge');
     const toaster = document.getElementById('toaster');
     const loadingBar = document.getElementById('loadingBar');
+    const overlayEl = document.getElementById('loading-overlay');
+    function showOverlay(msg) {
+      if (msg) overlayEl.querySelector('p').textContent = msg;
+      overlayEl.style.display = 'flex';
+      overlayEl.setAttribute('aria-hidden', 'false');
+    }
+    function hideOverlay() {
+      overlayEl.style.display = 'none';
+      overlayEl.setAttribute('aria-hidden', 'true');
+    }
     const aggregateBlock = document.getElementById('aggregateBlock');
     const aggMajor = document.getElementById('aggMajor');
     const aggMinor = document.getElementById('aggMinor');
@@ -971,6 +999,7 @@ Attending Report:
         emptyStateEl.classList.remove('d-none');
         renderNav([]);
         aggregateBlock.classList.add('d-none');
+        hideOverlay();
         return;
       }
       midLoading();
@@ -995,6 +1024,7 @@ Attending Report:
       containerEl.innerHTML = data.map(caseCardHTML).join('');
       renderNav(data);
       endLoading();
+      hideOverlay();
     }
 
     // ---------- Sorting / Filtering / Search ----------
@@ -1037,6 +1067,7 @@ Attending Report:
 
     document.getElementById('reportForm').addEventListener('submit', () => {
       startLoading();
+      showOverlay('Analyzing reports… this may take a moment.');
     });
 
     document.getElementById('clearBtn').addEventListener('click', () => {
