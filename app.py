@@ -23,7 +23,7 @@ logger.info(f"API key present: {bool(os.getenv('OPENAI_API_KEY'))}")
 
 # --------------------------- OpenAI ----------------------------------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-MODEL_ID = os.getenv("MODEL_ID", "gpt-5-mini")
+MODEL_ID = os.getenv("MODEL_ID", "gpt-5-mini")  # you can set MODEL_ID in Render to flip models
 
 # ----------------------- Default prompt ------------------------------
 DEFAULT_PROMPT = """Developer: You are a helpful assistant that outputs structured JSON summaries of radiology report differences. Categorize the changes made by the attending to the resident's radiology reports into three sections:
@@ -143,16 +143,37 @@ def get_summary(case_text, custom_prompt, case_number):
     try:
         logger.info(f"Processing case {case_number} with model={MODEL_ID}")
 
-        # NOTE: In SDK 1.99.x structured outputs live under text.format
+        # IMPORTANT: Include the word "JSON" in input to satisfy json_object/json_schema guardrail.
         response = client.responses.create(
             model=MODEL_ID,
             instructions=custom_prompt,
-            input=f"Case Number: {case_number}\n{case_text}",
+            input=(
+                "Return JSON only. Do not include any prose before or after the JSON.\n"
+                f"Case Number: {case_number}\n{case_text}"
+            ),
             max_output_tokens=1200,
             reasoning={"effort": "minimal"},
             text={
                 "verbosity": "low",
-                "format": {"type": "json_object"}  # easiest solid JSON while testing
+                "format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "CaseSummary",
+                        "strict": True,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "case_number": {"type": ["string", "number"]},
+                                "major_findings": {"type": "array", "items": {"type": "string"}},
+                                "minor_findings": {"type": "array", "items": {"type": "string"}},
+                                "clarifications": {"type": "array", "items": {"type": "string"}},
+                                "score": {"type": "integer"}
+                            },
+                            "required": ["case_number", "major_findings", "minor_findings", "clarifications", "score"],
+                            "additionalProperties": False
+                        }
+                    }
+                }
             },
         )
 
@@ -269,7 +290,7 @@ def extract_cases(text, custom_prompt):
                 'attending_report': attending_report,
                 'percentage_change': calculate_change_percentage(resident_report, remove_attending_review_line(attending_report)),
                 'diff': create_diff_by_section(resident_report, attending_report),
-                'summary': ai_summaries[ai_summaries.index(ai_summary)] if 'error' not in ai_summary else None,
+                'summary': ai_summary if 'error' not in ai_summary else None,
                 'summary_error': ai_summary.get('error') if isinstance(ai_summary, dict) else None
             })
             logger.info(f"Assigned summary to case {case_num}.")
