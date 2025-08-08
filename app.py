@@ -1,4 +1,3 @@
-
 from flask import Flask, render_template_string, request
 import difflib, re, os, json, logging
 import openai as _openai_pkg
@@ -326,6 +325,52 @@ def calculate_change_percentage(resident_text, attending_text):
     matcher = difflib.SequenceMatcher(None, resident_text.split(), attending_text.split())
     return round((1 - matcher.ratio()) * 100, 2)
 
+def split_into_paragraphs(text):
+    paragraphs = re.split(r'\n{2,}|\n(?=\w)', text)
+    return [para.strip() for para in paragraphs if para.strip()]
+
+def create_diff_by_section(resident_text, attending_text):
+    resident_text = normalize_text(resident_text)
+    attending_text = normalize_text(remove_attending_review_line(attending_text))
+    resident_paragraphs = split_into_paragraphs(resident_text)
+    attending_paragraphs = split_into_paragraphs(attending_text)
+
+    diff_html = ""
+    matcher = difflib.SequenceMatcher(None, resident_paragraphs, attending_paragraphs)
+    for opcode, a1, a2, b1, b2 in matcher.get_opcodes():
+        if opcode == 'equal':
+            for paragraph in resident_paragraphs[a1:a2]:
+                diff_html += f'<div class="para equal">{paragraph}</div>'
+        elif opcode == 'insert':
+            for paragraph in attending_paragraphs[b1:b2]:
+                diff_html += f'<div class="para ins">[Inserted: {paragraph}]</div>'
+        elif opcode == 'delete':
+            for paragraph in resident_paragraphs[a1:a2]:
+                diff_html += f'<div class="para del">[Deleted: {paragraph}]</div>'
+        elif opcode == 'replace':
+            res_paragraphs = resident_paragraphs[a1:a2]
+            att_paragraphs = attending_paragraphs[b1:b2]
+            for res_paragraph, att_paragraph in zip(res_paragraphs, att_paragraphs):
+                word_matcher = difflib.SequenceMatcher(None, res_paragraph.split(), att_paragraph.split())
+                seg = []
+                for word_opcode, w_a1, w_a2, w_b1, w_b2 in word_matcher.get_opcodes():
+                    if word_opcode == 'equal':
+                        seg.append(" ".join(res_paragraph.split()[w_a1:w_a2]))
+                    elif word_opcode == 'replace':
+                        seg.append(
+                            '<span class="word del">' +
+                            " ".join(res_paragraph.split()[w_a1:w_a2]) +
+                            '</span> <span class="word ins">' +
+                            " ".join(att_paragraph.split()[w_b1:w_b2]) +
+                            '</span>'
+                        )
+                    elif word_opcode == 'delete':
+                        seg.append('<span class="word del">' + " ".join(res_paragraph.split()[w_a1:w_a2]) + '</span>')
+                    elif word_opcode == 'insert':
+                        seg.append('<span class="word ins">' + " ".join(att_paragraph.split()[w_b1:w_b2]) + '</span>')
+                diff_html += f'<div class="para rep">{" ".join(seg)}</div>'
+    return diff_html
+
 # ------------------------- OpenAI call --------------------------------
 def get_summary(case_text, custom_prompt, case_number):
     try:
@@ -380,6 +425,29 @@ def get_summary(case_text, custom_prompt, case_number):
         return {"case_number": case_number, "error": f"Unhandled: {repr(e)}"}
 
 # ------------------------ Pipeline ------------------------------------
+def process_cases(cases_data, custom_prompt, max_workers=8):
+    structured_output = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_case = {
+            executor.submit(get_summary, case_text, custom_prompt, case_num): case_num
+            for case_text, case_num in cases_data
+        }
+        logger.info(f"Submitted {len(cases_data)} cases for concurrent processing.")
+
+        for future in as_completed(future_to_case):
+            case_num = future_to_case[future]
+            try:
+                parsed_json = future.result() or {}
+                if 'score' not in parsed_json:
+                    parsed_json['score'] = len(parsed_json.get('major_findings', [])) * 3 + len(parsed_json.get('minor_findings', []))
+                logger.info(f"Summary for case {case_num}: Score {parsed_json.get('score', 'N/A')}")
+            except Exception as e:
+                logger.error(f"Error processing case {case_num}: {e}")
+                parsed_json = {"case_number": case_num, "error": f"Unhandled: {repr(e)}"}
+            structured_output.append(parsed_json)
+    logger.info(f"Completed {len(structured_output)} summaries.")
+    return structured_output
+
 def extract_cases(text, custom_prompt):
     text = text.replace('\r\n', '\n').replace('\r', '\n')
     cases = re.split(r'(?m)^Case\s+(\d+)', text, flags=re.IGNORECASE)
@@ -417,38 +485,29 @@ def extract_cases(text, custom_prompt):
     if not cases_data:
         return parsed_cases
 
-    # concurrent summaries
-    structured_output = []
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {
-            executor.submit(get_summary, case_text, custom_prompt, case_num): (case_text, case_num)
-            for case_text, case_num in cases_data
-        }
-        for fut in as_completed(futures):
-            case_text, case_num = futures[fut]
-            try:
-                summary = fut.result() or {}
-            except Exception as e:
-                summary = {"case_number": case_num, "error": f"Unhandled: {repr(e)}"}
+    ai_summaries = process_cases(cases_data, custom_prompt, max_workers=8)
+    summaries_by_case_num = {str(s.get('case_number')): s for s in ai_summaries}
 
+    for case_text, case_num in cases_data:
+        try:
             resident_report = case_text.split("\nAttending Report:")[0].replace("Resident Report: ", "").strip()
             attending_report = case_text.split("\nAttending Report:")[1].strip()
+            ai_summary = summaries_by_case_num.get(case_num, {})
 
-            # % change for quick sort badge
-            pct = calculate_change_percentage(resident_report, remove_attending_review_line(attending_report))
-
-            structured_output.append({
-                "case_num": case_num,
-                "resident_report": resident_report,
-                "attending_report": attending_report,
-                "percentage_change": pct,
-                "summary": summary if "error" not in summary else None,
-                "summary_error": summary.get("error")
+            parsed_cases.append({
+                'case_num': case_num,
+                'resident_report': resident_report,
+                'attending_report': attending_report,
+                'percentage_change': calculate_change_percentage(resident_report, remove_attending_review_line(attending_report)),
+                'diff': create_diff_by_section(resident_report, attending_report),
+                'summary': ai_summary if 'error' not in ai_summary else None,
+                'summary_error': ai_summary.get('error')
             })
+        except IndexError:
+            logger.error(f"Error parsing reports for case {case_num}.")
+            continue
 
-    # keep stable order by case number
-    structured_output.sort(key=lambda x: int(x["case_num"]))
-    return structured_output
+    return parsed_cases
 
 # ---------------------------- Web -------------------------------------
 @app.route('/', methods=['GET', 'POST'])
@@ -470,13 +529,12 @@ def index():
   <title>Compare Revisions • Radiology</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-  <!-- jsdiff for best-in-class text diff visuals -->
-  <script src="https://cdn.jsdelivr.net/npm/diff@5.2.0/dist/diff.min.js"></script>
   <style>
     :root{
       --bg:#0f1115;--panel:#171a21;--panel-2:#1c2028;--text:#e6e6e6;--muted:#aeb4c0;
       --primary:#4da3ff;--primary-2:#2a84f2;--green:#2bd47d;--red:#ff6b6b;--chip-major:#ff375f;--chip-minor:#ffd166;--chip-clar:#6ee7ff;
-      --border:#2a2f3a;--rail:56px;
+      --border:#2a2f3a;
+      --rail:56px; /* minimalist collapsed sidebar width */
     }
     html,body{height:100%}
     body{
@@ -498,53 +556,84 @@ def index():
     .chip.clar{background:color-mix(in srgb,var(--chip-clar) 18%,transparent);color:#c4f4ff;border-color:#20545c}
     .progress{background:#1b2330;height:8px;border-radius:10px}
     .progress-bar{background:linear-gradient(90deg,var(--primary),#7ab8ff)}
+    .para{padding:.45rem .6rem;border-left:3px solid transparent;border-radius:8px;margin-bottom:.5rem;background:#0f131b}
+    .para.equal{border-left-color:#2b364a}
+    .para.ins{border-left-color:var(--green);background:rgba(43,212,125,.06)}
+    .para.del{border-left-color:var(--red);background:rgba(255,107,107,.06);text-decoration:line-through;opacity:.85}
+    .para.rep{border-left-color:#7ab8ff;background:rgba(122,184,255,.06)}
+    .word.ins{color:var(--green);font-weight:600}
+    .word.del{color:var(--red);text-decoration:line-through}
+    .loading-bar{position:fixed;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,var(--primary),#7ab8ff);z-index:1000;transition:width .3s ease}
 
-    /* Layout */
-    .layout{display:grid;grid-template-columns:320px 1fr;gap:14px;align-items:start}
-    .layout.collapsed{grid-template-columns:var(--rail) 1fr}
+    /* Layout: collapsible left, content right with right border */
+    .layout{
+      display:grid;
+      grid-template-columns: 320px 1fr;
+      gap:14px;
+      align-items:start;
+    }
+    .layout.collapsed{
+      grid-template-columns: var(--rail) 1fr;
+    }
+
     .sidebar-col{position:sticky;top:12px;height:calc(100vh - 24px)}
-    .sidebar{height:100%;overflow:auto;padding:10px}
-    .rail{height:100%;display:none;align-items:flex-start;justify-content:center}
+    .sidebar{
+      height:100%;overflow:auto;padding:10px;
+    }
+    /* minimalist rail shown when collapsed */
+    .rail{
+      height:100%;display:none;align-items:flex-start;justify-content:center;
+    }
     .layout.collapsed .rail{display:flex}
     .layout.collapsed .sidebar{display:none}
-    .rail .rail-inner{display:flex;flex-direction:column;gap:10px;margin-top:8px;width:var(--rail);align-items:center}
-    .rail .icon-btn{width:38px;height:38px;border-radius:10px;border:1px solid var(--border);background:#121722;color:#c6d4f2;display:flex;align-items:center;justify-content:center}
+
+    .rail .rail-inner{
+      display:flex;flex-direction:column;gap:10px;margin-top:8px;
+      width:var(--rail);align-items:center;
+    }
+    .rail .icon-btn{
+      width:38px;height:38px;border-radius:10px;border:1px solid var(--border);
+      background:#121722;color:#c6d4f2;display:flex;align-items:center;justify-content:center;
+    }
     .rail .icon-btn:hover{background:#161c2a;color:#fff}
-    .case-nav a{display:flex;align-items:center;gap:.5rem;padding:.35rem .5rem;border-radius:8px;color:var(--text)}
+
+    /* Sidebar minimalist list */
+    .case-nav a{
+      display:flex;align-items:center;gap:.5rem;
+      padding:.4rem .5rem;border-radius:8px;color:var(--text);
+    }
     .case-nav a:hover{background:#1a2030}
     .case-nav .meta{color:#99a3b6;font-size:.8rem}
     .sidebar h6{font-size:.95rem;margin:0}
-    .toggle-btn,.sort-btn,.side-btn{border-radius:10px;border:1px solid var(--border);background:#121722;color:#c6d4f2}
-    .sort-btn.active{outline:2px solid rgba(77,163,255,.35)}
-    .sort-btn .mode{font-weight:700;color:#b7d3ff}
 
-    /* Right panel with visible right border; wrap long text */
-    #resultsPanel{padding:8px;box-shadow: inset -1px 0 0 var(--border)}
+    /* Right container with visible right border and wrapping */
+    #resultsPanel{
+      padding:8px;
+      box-shadow: inset -1px 0 0 var(--border); /* subtle right border “fit” */
+    }
     pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;margin:0}
 
     .tabs{border-bottom:1px solid var(--border)}
     .tabs .nav-link{color:#aeb4c0}
     .tabs .nav-link.active{color:var(--text);background:#1a202c;border-color:var(--border) var(--border) #1a202c}
 
-    /* Diff visuals */
-    .diff-inline .eq{color:var(--text)}
-    .diff-inline .ins{background:rgba(43,212,125,.15);color:#caffdf;border-radius:4px;padding:.05rem .15rem}
-    .diff-inline .del{text-decoration:line-through;background:rgba(255,107,107,.12);color:#ffd1d1;border-radius:4px;padding:.05rem .15rem}
-    .diff-block{border-left:3px solid transparent;border-radius:8px;margin-bottom:.5rem;padding:.35rem .5rem;background:#0f131b}
-    .diff-block.insert{border-left-color:#2bd47d;background:rgba(43,212,125,.06)}
-    .diff-block.delete{border-left-color:#ff6b6b;background:rgba(255,107,107,.06)}
-    .diff-block.replace{border-left-color:#7ab8ff;background:rgba(122,184,255,.06)}
-    .sxs{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-    .sxs .side{background:#0f131b;border:1px solid var(--border);border-radius:10px;padding:.5rem}
-    .sxs .title{font-weight:600;color:#aeb4c0;margin-bottom:.25rem}
-    .mode-toggle{border-radius:10px;border:1px solid var(--border);background:#121722;color:#c6d4f2}
+    /* Buttons in sidebar */
+    .toggle-btn,.sort-btn,.side-btn{
+      border-radius:10px;border:1px solid var(--border);background:#121722;color:#c6d4f2
+    }
+    .toggle-btn[aria-pressed="true"]{background:#0e1320;color:#9fb9ff}
+    .sort-btn.active{outline:2px solid rgba(77,163,255,.35)}
+    .sort-btn .mode{font-weight:700;color:#b7d3ff}
 
+    .case-card{scroll-margin-top:90px}
     .kbd{border:1px solid #3a4252;border-bottom-color:#2e3543;background:#1a1f2b;padding:.15rem .35rem;border-radius:6px;font-size:.8rem;color:var(--muted)}
-    .badge-score{margin-left:.25rem}
+    .toaster{position:fixed;right:18px;bottom:18px;z-index:50;background:#1c2432;border:1px solid #2a3547;color:#d7e3ff;padding:.65rem .8rem;border-radius:10px;display:none}
   </style>
 </head>
 <body>
-  <!-- Top: paste area -->
+  <div class="loading-bar" id="loadingBar"></div>
+
+  <!-- Top: Paste block at the top -->
   <div class="container-fluid mt-3">
     <div class="panel p-3 mb-3">
       <form method="POST" id="reportForm">
@@ -570,29 +659,42 @@ Attending Report:
             <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="5" placeholder="Paste your system/developer prompt here (optional).">{{ custom_prompt }}</textarea>
           </div>
           <div class="col-12 d-flex gap-2 flex-wrap">
-            <button class="btn btn-primary"><i class="bi bi-lightning-charge"></i> Compare & Summarize</button>
-            <button class="btn btn-outline-light" type="button" id="clearBtn"><i class="bi bi-eraser"></i> Clear</button>
-            <button class="btn btn-outline-light" type="button" id="demoBtn"><i class="bi bi-journal-text"></i> Load Demo</button>
-            <button class="btn btn-outline-info" type="button" id="downloadAllBtn"><i class="bi bi-download"></i> Download JSON</button>
+            <button class="btn btn-primary">
+              <i class="bi bi-lightning-charge"></i> Compare & Summarize
+            </button>
+            <button class="btn btn-outline-light" type="button" id="clearBtn">
+              <i class="bi bi-eraser"></i> Clear
+            </button>
+            <button class="btn btn-outline-light" type="button" id="demoBtn">
+              <i class="bi bi-journal-text"></i> Load Demo
+            </button>
+            <button class="btn btn-outline-info" type="button" id="downloadAllBtn">
+              <i class="bi bi-download"></i> Download JSON
+            </button>
           </div>
         </div>
       </form>
     </div>
   </div>
 
-  <!-- Beneath: collapsible left sidebar + right content -->
+  <!-- Beneath: Collapsible left sidebar + right content -->
   <div class="container-fluid">
     <div id="gridLayout" class="layout">
+      <!-- Left column: contains full sidebar AND minimalist rail -->
       <div class="sidebar-col">
-        <!-- Collapsed rail -->
+        <!-- Minimalist rail (shown when collapsed) -->
         <div class="rail">
           <div class="rail-inner">
-            <button class="icon-btn" id="toggleSidebarBtnRail" aria-pressed="true" title="Expand case list"><i class="bi bi-layout-sidebar-inset"></i></button>
-            <button class="icon-btn" id="sortCaseBtnRail" data-mode="number" title="Cycle sort"><i class="bi bi-sort-numeric-down"></i></button>
+            <button class="icon-btn" id="toggleSidebarBtnRail" aria-pressed="true" title="Expand case list">
+              <i class="bi bi-layout-sidebar-inset"></i>
+            </button>
+            <button class="icon-btn" id="sortCaseBtnRail" data-mode="number" title="Cycle sort">
+              <i class="bi bi-sort-numeric-down"></i>
+            </button>
           </div>
         </div>
 
-        <!-- Full sidebar -->
+        <!-- Full sidebar (hidden when collapsed) -->
         <div class="sidebar panel">
           <div class="d-flex align-items-center gap-2 mb-2">
             <h6 class="mb-0">Cases</h6>
@@ -608,12 +710,14 @@ Attending Report:
             </button>
           </div>
           <input id="searchInput" class="form-control form-control-sm mb-2" placeholder="Search text or Case # (F)"/>
+
           <div class="d-flex flex-wrap gap-2 mb-2">
             <button class="side-btn btn-sm" id="filterMajorsBtn"><i class="bi bi-exclamation-octagon"></i> Majors</button>
             <button class="side-btn btn-sm" id="filterErrorsBtn"><i class="bi bi-bug"></i> Errors</button>
             <button class="side-btn btn-sm" id="expandAllBtn"><i class="bi bi-arrows-expand"></i> Expand</button>
             <button class="side-btn btn-sm" id="collapseAllBtn"><i class="bi bi-arrows-collapse"></i> Collapse</button>
           </div>
+
           <div id="aggregateBlock" class="panel-2 p-2 mb-2 d-none">
             <div class="d-flex align-items-center gap-2 mb-1">
               <span class="chip major">Major <span id="aggMajor">0</span></span>
@@ -624,7 +728,9 @@ Attending Report:
               <div class="progress-bar" id="aggBar" style="width:0%"></div>
             </div>
           </div>
+
           <div id="caseNav" class="case-nav small"></div>
+
           <div class="mt-3 small text-secondary">
             <div><span class="kbd">J</span>/<span class="kbd">K</span> next/prev</div>
             <div><span class="kbd">1–4</span> tabs</div>
@@ -635,6 +741,7 @@ Attending Report:
         </div>
       </div>
 
+      <!-- Main content with right border & wrapping -->
       <div>
         <div id="resultsPanel" class="panel p-2">
           <div id="emptyState" class="text-center text-secondary p-5">
@@ -648,32 +755,52 @@ Attending Report:
     </div>
   </div>
 
-  <script>
-    // ---------- Data ----------
-    let caseData = {{ case_data | tojson }};
+  <div class="toaster" id="toaster"></div>
 
-    // ---------- DOM ----------
-    const gridLayout = document.getElementById('gridLayout');
+  <script>
+    let caseData = {{ case_data | tojson }};
     const navEl = document.getElementById('caseNav');
     const containerEl = document.getElementById('caseContainer');
     const emptyStateEl = document.getElementById('emptyState');
     const caseCountBadge = document.getElementById('caseCountBadge');
+    const toaster = document.getElementById('toaster');
+    const loadingBar = document.getElementById('loadingBar');
     const aggregateBlock = document.getElementById('aggregateBlock');
     const aggMajor = document.getElementById('aggMajor');
     const aggMinor = document.getElementById('aggMinor');
     const aggClar = document.getElementById('aggClar');
     const aggBar = document.getElementById('aggBar');
 
-    // Sidebar controls (full + rail)
+    const gridLayout = document.getElementById('gridLayout');
+
+    // Full sidebar controls
     const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
     const sortBtn = document.getElementById('sortCaseBtn');
     const sortModeLabel = document.getElementById('sortModeLabel');
+
+    // Rail controls (collapsed)
     const toggleSidebarBtnRail = document.getElementById('toggleSidebarBtnRail');
     const sortBtnRail = document.getElementById('sortCaseBtnRail');
 
     const sortModes = ['number','change','score'];
     const sortLabels = { number: 'Case #', change: 'Δ Change', score: 'Score' };
-    const sortIcons = { number: 'bi-sort-numeric-down', change: 'bi-lightning-charge', score: 'bi-trophy' };
+    const sortIcons = {
+      number: 'bi-sort-numeric-down',
+      change: 'bi-lightning-charge',
+      score: 'bi-trophy'
+    };
+
+    // ---------- Loading bar ----------
+    const startLoading = () => { loadingBar.style.width = '35%'; };
+    const midLoading = () => { loadingBar.style.width = '70%'; };
+    const endLoading = () => { loadingBar.style.width = '100%'; setTimeout(()=>{ loadingBar.style.width='0%'; }, 400); };
+
+    // ---------- Toast ----------
+    function toast(msg, ms=1600) {
+      toaster.textContent = msg;
+      toaster.style.display = 'block';
+      setTimeout(()=>{ toaster.style.display = 'none'; }, ms);
+    }
 
     // ---------- Sidebar collapse/expand ----------
     function setCollapsed(collapsed){
@@ -684,109 +811,55 @@ Attending Report:
     toggleSidebarBtn.addEventListener('click', () => setCollapsed(true));
     toggleSidebarBtnRail.addEventListener('click', () => setCollapsed(false));
 
-    // ---------- Sort state ----------
+    // ---------- Sort button visual state (sync full + rail) ----------
     function applySortVisual(mode) {
+      // full button
       sortBtn.setAttribute('data-mode', mode);
       sortBtn.classList.add('active');
       sortBtn.innerHTML = '<i class="bi '+sortIcons[mode]+' me-1"></i> Sort: <span class="mode" id="sortModeLabel">'+sortLabels[mode]+'</span>';
+      // rail button
       sortBtnRail.setAttribute('data-mode', mode);
       sortBtnRail.innerHTML = '<i class="bi '+sortIcons[mode]+'"></i>';
     }
-    function sortBy(mode) {
-      if (mode === 'number') {
-        caseData.sort((a,b)=> parseInt(a.case_num)-parseInt(b.case_num));
-      } else if (mode === 'change') {
-        caseData.sort((a,b)=> (b.percentage_change||0)-(a.percentage_change||0));
-      } else if (mode === 'score') {
-        caseData.sort((a,b)=> ((b.summary?.score)||0)-((a.summary?.score)||0));
-      }
-    }
-    function cycleSort(current){
-      const next = sortModes[(sortModes.indexOf(current)+1)%sortModes.length];
-      sortBy(next); applySortVisual(next); renderAll(caseData);
-    }
-    sortBtn.addEventListener('click', () => cycleSort(sortBtn.getAttribute('data-mode') || 'number'));
-    sortBtnRail.addEventListener('click', () => cycleSort(sortBtnRail.getAttribute('data-mode') || 'number'));
 
-    // ---------- Search / Filters ----------
-    const searchInput = document.getElementById('searchInput');
-    searchInput.addEventListener('input', () => {
-      let list = [...caseData];
-      const q = searchInput.value.toLowerCase();
-      if (q) {
-        list = list.filter(c => {
-          if (String(c.case_num).includes(q)) return true;
-          if (c.resident_report?.toLowerCase().includes(q)) return true;
-          if (c.attending_report?.toLowerCase().includes(q)) return true;
-          const s = c.summary;
-          return s ? JSON.stringify(s).toLowerCase().includes(q) : false;
-        });
-      }
-      renderAll(list);
-    });
-    document.getElementById('filterMajorsBtn').addEventListener('click', () => {
-      renderAll(caseData.filter(x => (x.summary?.major_findings?.length||0) > 0));
-    });
-    document.getElementById('filterErrorsBtn').addEventListener('click', () => {
-      renderAll(caseData.filter(x => !x.summary));
-    });
-    document.getElementById('expandAllBtn').addEventListener('click', () => {
-      document.querySelectorAll('[id^="body"]').forEach(el => el.style.display = '');
-    });
-    document.getElementById('collapseAllBtn').addEventListener('click', () => {
-      document.querySelectorAll('[id^="body"]').forEach(el => el.style.display = 'none');
-    });
-
-    // ---------- Demo / Clear / Download ----------
-    document.getElementById('reportForm').addEventListener('submit', () => {});
-    document.getElementById('clearBtn').addEventListener('click', () => {
-      document.getElementById('report_text').value = '';
-      document.getElementById('custom_prompt').value = '';
-      caseData = [];
+    function cycleSort(currentMode){
+      const idx = sortModes.indexOf(currentMode);
+      const next = sortModes[(idx+1)%sortModes.length];
+      sortBy(next);
+      applySortVisual(next);
       renderAll(caseData);
-    });
-    document.getElementById('demoBtn').addEventListener('click', () => {
-      const demo = `Case 1
-Resident Report:
-Heterogeneous masslike lesion in the right lower pole collecting system with severe right hydronephrosis. Mild heterogeneity of the left upper pole renal collecting system with moderate hydronephrosis. No secondary signs of trauma. Findings likely represent bilateral urothelial malignancy, however acute traumatic injury not entirely excluded. Recommend further evaluation with renal protocol CT.
+    }
 
-Attending Report:
-1. No definite acute traumatic abnormality in the chest, abdomen, or pelvis.
-2. Bilateral hydronephrosis and peripelvic cysts. Indeterminate hyperdense tissue in the left peripelvic cysts and right upper pole collecting system is atypical for a posttraumatic finding and concerning for possible underlying neoplasm. Hemorrhagic or infectious etiologies are also considerations. Clinical correlation and multiphase CT/MRI with urological follow-up recommended.
-3. Bilateral axillary lymphadenopathy, nonspecific.
-4. Indeterminate right middle lobe pulmonary nodule. No follow-up needed if patient is low-risk. Non-contrast chest CT can be considered in 12 months if patient is high-risk (Per Fleischner Society guidelines). Shorter-term follow-up could be considered according to oncological considerations, as indicated.
-5. Splenectomy. Additional findings above.`;
-      document.getElementById('report_text').value = demo;
+    sortBtn.addEventListener('click', () => {
+      const current = sortBtn.getAttribute('data-mode') || 'number';
+      cycleSort(current);
     });
-    document.getElementById('downloadAllBtn').addEventListener('click', () => {
-      const summaries = caseData.map(c => ({ case_number: c.case_num, summary: c.summary, error: c.summary_error || null }));
-      const blob = new Blob([JSON.stringify(summaries, null, 2)], {type: 'application/json'});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = 'summaries.json'; a.click();
-      URL.revokeObjectURL(url);
+    sortBtnRail.addEventListener('click', () => {
+      const current = sortBtnRail.getAttribute('data-mode') || 'number';
+      cycleSort(current);
     });
 
-    // ---------- Nav & Cards ----------
-    function renderNav(list) {
-      navEl.innerHTML = list.map(c => `
+    // ---------- Navigation render ----------
+    function formatNavRow(c) {
+      const score = (c.summary && c.summary.score) || 0;
+      return `
         <a href="#case${c.case_num}">
           <div class="me-auto">
             <div><strong>#${c.case_num}</strong></div>
-            <div class="meta">Δ ${c.percentage_change}% • Score ${(c.summary?.score)||0}</div>
+            <div class="meta">Δ ${c.percentage_change}% • Score ${score}</div>
           </div>
         </a>
-      `).join('');
+      `;
+    }
+
+    function renderNav(list) {
+      navEl.innerHTML = list.map(formatNavRow).join('');
       caseCountBadge.textContent = list.length;
     }
 
-    function escapeHTML(str) {
-      if (!str) return '';
-      return str.replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[m]));
-    }
-
+    // ---------- Case card ----------
     function caseCardHTML(c) {
-      const s = c.summary;
-      if (!s) {
+      if (!c.summary) {
         return `
           <div id="case${c.case_num}" class="case-card panel-2 p-3 mb-3">
             <div class="d-flex align-items-center gap-2">
@@ -798,13 +871,16 @@ Attending Report:
         `;
       }
 
+      const s = c.summary;
       const majors = s.major_findings || [];
       const minors = s.minor_findings || [];
       const clar = s.clarifications || [];
       const total = majors.length + minors.length + clar.length;
       const pctMajor = total ? Math.round((majors.length/total)*100) : 0;
 
-      const listHTML = arr => arr.length ? `<ul class="mb-0">${arr.map(x=>`<li>${x}</li>`).join('')}</ul>` : '<div class="text-secondary small">None</div>';
+      const majorsList = majors.length ? `<ul class="mb-0">${majors.map(x=>`<li>${x}</li>`).join('')}</ul>` : '<div class="text-secondary small">None</div>';
+      const minorsList = minors.length ? `<ul class="mb-0">${minors.map(x=>`<li>${x}</li>`).join('')}</ul>` : '<div class="text-secondary small">None</div>';
+      const clarList = clar.length ? `<ul class="mb-0">${clar.map(x=>`<li>${x}</li>`).join('')}</ul>` : '<div class="text-secondary small">None</div>';
 
       return `
         <div id="case${c.case_num}" class="case-card panel-2 p-3 mb-3">
@@ -813,8 +889,10 @@ Attending Report:
             <span class="badge badge-score">Score ${s.score ?? 0}</span>
             <span class="ms-2 text-secondary small">Δ ${c.percentage_change}%</span>
             <span class="ms-auto d-flex gap-2">
-              <button class="btn btn-outline-light btn-sm" onclick='navigator.clipboard.writeText(${JSON.stringify(JSON.stringify(s))})'><i class="bi bi-clipboard"></i> Copy JSON</button>
-              <button class="btn btn-outline-light btn-sm" onclick="toggleCollapse('${c.case_num}')"><i class="bi bi-arrows-collapse"></i> Toggle</button>
+              <button class="btn btn-outline-light btn-sm" onclick='copyJSON(${JSON.stringify(JSON.stringify(s))})'><i class="bi bi-clipboard"></i> Copy JSON</button>
+              <button class="btn btn-outline-light btn-sm" data-toggle="collapse" data-target="#body${c.case_num}" onclick="toggleCollapse('${c.case_num}')">
+                <i class="bi bi-arrows-collapse"></i> Toggle
+              </button>
             </span>
           </div>
 
@@ -823,48 +901,61 @@ Attending Report:
             <span class="chip minor">Minor ${minors.length}</span>
             <span class="chip clar">Clar ${clar.length}</span>
           </div>
+
           <div class="progress my-2" title="${pctMajor}% of items are major">
-            <div class="progress-bar" style="width:${pctMajor}%"></div>
+            <div class="progress-bar" style="width: ${pctMajor}%"></div>
           </div>
 
           <div id="body${c.case_num}">
-            <div class="d-flex justify-content-end mb-2">
-              <div class="btn-group btn-group-sm" role="group" aria-label="Diff mode">
-                <button class="mode-toggle px-2" onclick="setDiffMode('${c.case_num}','unified')">Unified</button>
-                <button class="mode-toggle px-2" onclick="setDiffMode('${c.case_num}','sxs')">Side-by-Side</button>
-              </div>
-            </div>
-
             <ul class="nav nav-tabs tabs mt-2" role="tablist">
-              <li class="nav-item"><button class="nav-link active" id="tab-sum-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-sum-${c.case_num}" type="button">Summary</button></li>
-              <li class="nav-item"><button class="nav-link" id="tab-combo-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-combo-${c.case_num}" type="button">Combined Diff</button></li>
-              <li class="nav-item"><button class="nav-link" id="tab-res-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-res-${c.case_num}" type="button">Resident</button></li>
-              <li class="nav-item"><button class="nav-link" id="tab-att-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-att-${c.case_num}" type="button">Attending</button></li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="tab-sum-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-sum-${c.case_num}" type="button" role="tab">Summary</button>
+              </li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link" id="tab-combo-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-combo-${c.case_num}" type="button" role="tab">Combined Diff</button>
+              </li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link" id="tab-res-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-res-${c.case_num}" type="button" role="tab">Resident</button>
+              </li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link" id="tab-att-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-att-${c.case_num}" type="button" role="tab">Attending</button>
+              </li>
             </ul>
 
             <div class="tab-content p-2">
-              <div class="tab-pane fade show active" id="tab-pane-sum-${c.case_num}">
+              <div class="tab-pane fade show active" id="tab-pane-sum-${c.case_num}" role="tabpanel" tabindex="0">
                 <div class="row g-2">
-                  <div class="col-12 col-lg-4"><div class="panel p-2 h-100"><div class="mb-2"><i class="bi bi-exclamation-octagon text-danger"></i> <strong>Major</strong></div>${listHTML(majors)}</div></div>
-                  <div class="col-12 col-lg-4"><div class="panel p-2 h-100"><div class="mb-2"><i class="bi bi-info-circle text-warning"></i> <strong>Minor</strong></div>${listHTML(minors)}</div></div>
-                  <div class="col-12 col-lg-4"><div class="panel p-2 h-100"><div class="mb-2"><i class="bi bi-pencil-square text-info"></i> <strong>Clarifications</strong></div>${listHTML(clar)}</div></div>
-                </div>
-              </div>
-
-              <div class="tab-pane fade" id="tab-pane-combo-${c.case_num}">
-                <div class="panel p-2">
-                  <div id="diff-${c.case_num}" class="diff-inline"></div>
-                  <div id="diff-sxs-${c.case_num}" class="sxs d-none">
-                    <div class="side"><div class="title">Resident</div><div id="sxs-left-${c.case_num}"></div></div>
-                    <div class="side"><div class="title">Attending</div><div id="sxs-right-${c.case_num}"></div></div>
+                  <div class="col-12 col-lg-4">
+                    <div class="panel p-2 h-100">
+                      <div class="d-flex align-items-center gap-2 mb-2"><i class="bi bi-exclamation-octagon text-danger"></i><strong>Major</strong></div>
+                      ${majorsList}
+                    </div>
+                  </div>
+                  <div class="col-12 col-lg-4">
+                    <div class="panel p-2 h-100">
+                      <div class="d-flex align-items-center gap-2 mb-2"><i class="bi bi-info-circle text-warning"></i><strong>Minor</strong></div>
+                      ${minorsList}
+                    </div>
+                  </div>
+                  <div class="col-12 col-lg-4">
+                    <div class="panel p-2 h-100">
+                      <div class="d-flex align-items-center gap-2 mb-2"><i class="bi bi-pencil-square text-info"></i><strong>Clarifications</strong></div>
+                      ${clarList}
+                    </div>
                   </div>
                 </div>
               </div>
 
-              <div class="tab-pane fade" id="tab-pane-res-${c.case_num}">
+              <div class="tab-pane fade" id="tab-pane-combo-${c.case_num}" role="tabpanel" tabindex="0">
+                <div class="panel p-2">
+                  ${c.diff}
+                </div>
+              </div>
+
+              <div class="tab-pane fade" id="tab-pane-res-${c.case_num}" role="tabpanel" tabindex="0">
                 <div class="panel p-2"><pre class="mb-0">${escapeHTML(c.resident_report)}</pre></div>
               </div>
-              <div class="tab-pane fade" id="tab-pane-att-${c.case_num}">
+              <div class="tab-pane fade" id="tab-pane-att-${c.case_num}" role="tabpanel" tabindex="0">
                 <div class="panel p-2"><pre class="mb-0">${escapeHTML(c.attending_report)}</pre></div>
               </div>
             </div>
@@ -873,185 +964,207 @@ Attending Report:
       `;
     }
 
+    // ---------- Rendering ----------
     function renderAll(data) {
-      if (!data || !data.length) {
-        containerEl.classList.add('d-none'); emptyStateEl.classList.remove('d-none');
-        renderNav([]); aggregateBlock.classList.add('d-none'); return;
+      if (!data || data.length === 0) {
+        containerEl.classList.add('d-none');
+        emptyStateEl.classList.remove('d-none');
+        renderNav([]);
+        aggregateBlock.classList.add('d-none');
+        return;
       }
-      containerEl.classList.remove('d-none'); emptyStateEl.classList.add('d-none');
+      midLoading();
+      emptyStateEl.classList.add('d-none');
+      containerEl.classList.remove('d-none');
 
       // Aggregate
-      let M=0,m=0,cnt=0;
+      let M=0, m=0, c=0;
       data.forEach(d => {
         if (!d.summary) return;
         M += (d.summary.major_findings||[]).length;
         m += (d.summary.minor_findings||[]).length;
-        cnt += (d.summary.clarifications||[]).length;
+        c += (d.summary.clarifications||[]).length;
       });
-      const total = M+m+cnt;
-      aggMajor.textContent=M; aggMinor.textContent=m; aggClar.textContent=cnt;
-      aggBar.style.width = total ? Math.round((M/total)*100)+'%' : '0%';
+      const total = M+m+c;
+      aggMajor.textContent = M;
+      aggMinor.textContent = m;
+      aggClar.textContent = c;
+      aggBar.style.width = total ? Math.min(100, Math.round((M/Math.max(1,total))*100)) + '%' : '0%';
       aggregateBlock.classList.remove('d-none');
 
       containerEl.innerHTML = data.map(caseCardHTML).join('');
       renderNav(data);
-
-      // After DOM is in, build diffs for each case
-      data.forEach(c => buildBestDiff(c.case_num, c.resident_report||'', c.attending_report||''));
+      endLoading();
     }
 
-    // ---------- Best-possible diff for radiology conclusions ----------
-    // 1) Sentence/bullet splitter that respects numbered lists
-    function splitSentencesWithBullets(text) {
-      if (!text) return [];
-      const lines = text.split(/\\r?\\n/).map(s=>s.trim()).filter(Boolean);
-      let s = lines.join(' ');
-      s = s.replace(/\\s*(\\d+\\.\\s+)/g, '\\n$1');
-      s = s.replace(/\\s*(-\\s+|\\*\\s+)/g, '\\n$1');
-      const parts = s.split(/(?<=[.!?])\\s+(?=[A-Z0-9])|\\n(?=\\d+\\.\\s+|-\\s+|\\*\\s+)/).map(p=>p.trim()).filter(Boolean);
-      return parts;
-    }
-
-    // 2) Simple similarity based on jsdiff equal tokens
-    function sentenceSimilarity(a, b) {
-      const diff = Diff.diffWordsWithSpace(a, b);
-      let eq = 0, total = Math.max(a.length, b.length) || 1;
-      diff.forEach(p => { if (!p.added && !p.removed) eq += p.value.length; });
-      return eq / total;
-    }
-
-    // 3) Align sentences greedily with threshold
-    function alignBlocks(resSents, attSents, thresh=0.60) {
-      const usedA = new Set();
-      const pairs = [];
-      resSents.forEach((rs, i) => {
-        let bestJ = -1, bestScore = 0;
-        attSents.forEach((as, j) => {
-          if (usedA.has(j)) return;
-          const score = sentenceSimilarity(rs, as);
-          if (score > bestScore) { bestScore = score; bestJ = j; }
-        });
-        if (bestJ >= 0 && bestScore >= thresh) {
-          usedA.add(bestJ);
-          pairs.push({i, j: bestJ});
-        }
-      });
-      const usedR = new Set(pairs.map(p=>p.i));
-      const unpairedR = resSents.map((s, i)=> i).filter(i=>!usedR.has(i));
-      const unpairedA = attSents.map((s, j)=> j).filter(j=>!usedA.has(j));
-      return {pairs: pairs.sort((a,b)=>a.i-b.i), unpairedR, unpairedA};
-    }
-
-    // 4) Build both Unified and Side-by-Side diffs
-    function buildBestDiff(id, resident, attending) {
-      const resSents = splitSentencesWithBullets(resident);
-      const attSents = splitSentencesWithBullets(attending);
-      const {pairs, unpairedR, unpairedA} = alignBlocks(resSents, attSents, 0.60);
-
-      const unified = [];
-      // deleted sentences
-      unpairedR.forEach(i => unified.push(`<div class="diff-block delete">[Deleted: ${escapeHTML(resSents[i])}]</div>`));
-      // inserted sentences
-      unpairedA.forEach(j => unified.push(`<div class="diff-block insert">[Inserted: ${escapeHTML(attSents[j])}]</div>`));
-      // replacements with word-level highlights
-      pairs.forEach(({i,j}) => {
-        const chunks = Diff.diffWordsWithSpace(resSents[i], attSents[j]);
-        const line = chunks.map(p => {
-          if (p.added) return `<span class="ins">${escapeHTML(p.value)}</span>`;
-          if (p.removed) return `<span class="del">${escapeHTML(p.value)}</span>`;
-          return `<span class="eq">${escapeHTML(p.value)}</span>`;
-        }).join('');
-        unified.push(`<div class="diff-block replace"><div class="diff-inline">${line}</div></div>`);
-      });
-
-      const mount = document.getElementById('diff-'+id);
-      if (mount) mount.innerHTML = unified.join('');
-
-      // Side-by-side: render independent word highlights on each side
-      const left = document.getElementById('sxs-left-'+id);
-      const right = document.getElementById('sxs-right-'+id);
-      if (left && right) {
-        const leftHTML = [];
-        const rightHTML = [];
-        // Show deletions in left
-        unpairedR.forEach(i => leftHTML.push(`<div class="diff-block delete">${escapeHTML(resSents[i])}</div>`));
-        // Show insertions in right
-        unpairedA.forEach(j => rightHTML.push(`<div class="diff-block insert">${escapeHTML(attSents[j])}</div>`));
-        // Paired replacements with inline highlights on each side independently
-        pairs.forEach(({i,j}) => {
-          const lw = Diff.diffWordsWithSpace(resSents[i], ''); // mark all as baseline
-          const rw = Diff.diffWordsWithSpace('', attSents[j]);
-
-          // but better: build both sides using the same diff so corresponding tokens line up visually
-          const chunks = Diff.diffWordsWithSpace(resSents[i], attSents[j]);
-          const L = chunks.map(p=>{
-            if (p.removed) return `<span class="del">${escapeHTML(p.value)}</span>`;
-            if (!p.added) return `<span class="eq">${escapeHTML(p.value)}</span>`;
-            return '';
-          }).join('');
-          const R = chunks.map(p=>{
-            if (p.added) return `<span class="ins">${escapeHTML(p.value)}</span>`;
-            if (!p.removed) return `<span class="eq">${escapeHTML(p.value)}</span>`;
-            return '';
-          }).join('');
-
-          leftHTML.push(`<div class="diff-block replace"><div class="diff-inline">${L}</div></div>`);
-          rightHTML.push(`<div class="diff-block replace"><div class="diff-inline">${R}</div></div>`);
-        });
-
-        left.innerHTML = leftHTML.join('');
-        right.innerHTML = rightHTML.join('');
+    // ---------- Sorting / Filtering / Search ----------
+    function sortBy(mode) {
+      if (mode === 'number') {
+        caseData.sort((a,b)=> parseInt(a.case_num)-parseInt(b.case_num));
+      } else if (mode === 'change') {
+        caseData.sort((a,b)=> (b.percentage_change||0)-(a.percentage_change||0));
+      } else if (mode === 'score') {
+        caseData.sort((a,b)=> ((b.summary?.score)||0)-((a.summary?.score)||0));
       }
     }
-
-    // Toggle unified vs sxs
-    window.setDiffMode = function(id, mode) {
-      const u = document.getElementById('diff-'+id);
-      const sxs = document.getElementById('diff-sxs-'+id);
-      if (!u || !sxs) return;
-      if (mode === 'sxs') { u.classList.add('d-none'); sxs.classList.remove('d-none'); }
-      else { sxs.classList.add('d-none'); u.classList.remove('d-none'); }
+    function filterMajorsOnly(list) {
+      return list.filter(x => (x.summary?.major_findings?.length||0) > 0);
+    }
+    function filterErrorsOnly(list) {
+      return list.filter(x => !x.summary);
+    }
+    function searchFilter(list, q) {
+      if (!q) return list;
+      q = q.toLowerCase();
+      return list.filter(c => {
+        if (String(c.case_num).includes(q)) return true;
+        if (c.resident_report?.toLowerCase().includes(q)) return true;
+        if (c.attending_report?.toLowerCase().includes(q)) return true;
+        const s = c.summary;
+        if (s) { return JSON.stringify(s).toLowerCase().includes(q); }
+        return false;
+      });
     }
 
-    window.toggleCollapse = function(id){
+    // ---------- Event wiring ----------
+    document.addEventListener('DOMContentLoaded', () => {
+      if (caseData && caseData.length) {
+        renderAll(caseData);
+      }
+      applySortVisual('number'); // initialize sort visual
+      setCollapsed(false);       // start expanded
+    });
+
+    document.getElementById('reportForm').addEventListener('submit', () => {
+      startLoading();
+    });
+
+    document.getElementById('clearBtn').addEventListener('click', () => {
+      document.getElementById('report_text').value = '';
+      document.getElementById('custom_prompt').value = '';
+      caseData = [];
+      renderAll(caseData);
+    });
+
+    document.getElementById('demoBtn').addEventListener('click', () => {
+      const demo = `Case 1
+Resident Report:
+No pneumothorax. Lungs clear.
+
+Attending Report:
+Small right apical pneumothorax. Mild bibasilar atelectasis.
+
+Case 2
+Resident Report:
+Possible segmental PE in RLL.
+
+Attending Report:
+No pulmonary embolism.`;
+      document.getElementById('report_text').value = demo;
+      toast('Demo loaded. Click Compare & Summarize.');
+    });
+
+    const searchInput = document.getElementById('searchInput');
+    searchInput.addEventListener('input', () => {
+      let list = [...caseData];
+      list = searchFilter(list, searchInput.value);
+      renderAll(list);
+    });
+
+    document.getElementById('filterMajorsBtn').addEventListener('click', () => {
+      const filtered = filterMajorsOnly(caseData);
+      renderAll(filtered);
+      toast('Showing cases with MAJOR findings');
+    });
+
+    document.getElementById('filterErrorsBtn').addEventListener('click', () => {
+      const filtered = filterErrorsOnly(caseData);
+      renderAll(filtered);
+      toast('Showing error cases only');
+    });
+
+    document.getElementById('expandAllBtn').addEventListener('click', () => {
+      document.querySelectorAll('[id^="body"]').forEach(el => el.style.display = '');
+    });
+    document.getElementById('collapseAllBtn').addEventListener('click', () => {
+      document.querySelectorAll('[id^="body"]').forEach(el => el.style.display = 'none');
+    });
+
+    document.getElementById('downloadAllBtn').addEventListener('click', () => {
+      const summaries = caseData.map(c => ({ case_number: c.case_num, summary: c.summary, error: c.summary_error || null }));
+      const blob = new Blob([JSON.stringify(summaries, null, 2)], {type: 'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'summaries.json'; a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    // ---------- Utils ----------
+    function toggleCollapse(id) {
       const el = document.getElementById('body'+id);
       if (!el) return;
       el.style.display = (el.style.display === 'none') ? '' : 'none';
     }
+    window.toggleCollapse = toggleCollapse;
 
-    // ---------- Init ----------
-    document.addEventListener('DOMContentLoaded', () => {
-      if (caseData && caseData.length) renderAll(caseData);
-      applySortVisual('number'); setCollapsed(false);
-    });
+    function copyJSON(text) {
+      navigator.clipboard.writeText(JSON.parse(text))
+        .then(()=> toast('JSON copied'))
+        .catch(()=> toast('Copy failed', 2000));
+    }
+    window.copyJSON = copyJSON;
 
-    // Keyboard helpers
+    function escapeHTML(str) {
+      if (!str) return '';
+      return str.replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[m]));
+    }
+    window.escapeHTML = escapeHTML;
+
+    // ---------- Keyboard shortcuts ----------
     let currentIndex = 0;
     function focusCase(i) {
       const list = document.querySelectorAll('.case-card');
       if (!list.length) return;
       currentIndex = Math.max(0, Math.min(i, list.length-1));
       list[currentIndex].scrollIntoView({behavior:'smooth', block:'start'});
+      list[currentIndex].classList.add('ring');
+      setTimeout(()=> list[currentIndex].classList.remove('ring'), 600);
     }
     function switchTab(n) {
       const list = document.querySelectorAll('.case-card');
       if (!list.length) return;
       const id = list[currentIndex].id.replace('case','');
       const tabIds = ['sum','combo','res','att'];
-      const btn = document.getElementById(`tab-${tabIds[n-1]}-${id}`);
+      const which = tabIds[n-1] || 'sum';
+      const btn = document.getElementById(`tab-${which}-${id}`);
       if (btn) btn.click();
     }
+
+    let gPressedOnce = false;
     document.addEventListener('keydown', (e) => {
       if (['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) {
         if (e.key.toLowerCase()==='escape') document.activeElement.blur();
         return;
       }
-      if (e.key.toLowerCase()==='j') { e.preventDefault(); focusCase(currentIndex+1); }
-      if (e.key.toLowerCase()==='k') { e.preventDefault(); focusCase(currentIndex-1); }
-      if (['1','2','3','4'].includes(e.key)) { e.preventDefault(); switchTab(parseInt(e.key,10)); }
-      if (e.key.toLowerCase()==='f') { e.preventDefault(); document.getElementById('searchInput').focus(); }
-      if (e.key.toLowerCase()==='s') { e.preventDefault(); (gridLayout.classList.contains('collapsed') ? sortBtnRail : sortBtn).click(); }
-      if (e.key.toLowerCase()==='g') { window.scrollTo({top:0, behavior:'smooth'}); }
+      if (e.key==='j' || e.key==='J') {
+        e.preventDefault(); focusCase(currentIndex+1);
+      } else if (e.key==='k' || e.key==='K') {
+        e.preventDefault(); focusCase(currentIndex-1);
+      } else if (['1','2','3','4'].includes(e.key)) {
+        e.preventDefault(); switchTab(parseInt(e.key,10));
+      } else if (e.key.toLowerCase()==='f') {
+        e.preventDefault(); document.getElementById('searchInput').focus();
+      } else if (e.key.toLowerCase()==='s') {
+        e.preventDefault();
+        // trigger whichever sort control is visible
+        if (gridLayout.classList.contains('collapsed')) sortBtnRail.click(); else sortBtn.click();
+      } else if (e.key.toLowerCase()==='g') {
+        if (gPressedOnce) {
+          window.scrollTo({top:0, behavior:'smooth'}); gPressedOnce=false;
+        } else {
+          gPressedOnce=true; setTimeout(()=> gPressedOnce=false, 450);
+        }
+      }
     });
   </script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
