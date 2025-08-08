@@ -1,5 +1,5 @@
-from flask import Flask, render_template_string, request, send_file
-import difflib, re, os, json, logging, io
+from flask import Flask, render_template_string, request
+import difflib, re, os, json, logging
 import openai as _openai_pkg
 from openai import OpenAI
 from openai import (
@@ -23,7 +23,7 @@ logger.info(f"API key present: {bool(os.getenv('OPENAI_API_KEY'))}")
 
 # --------------------------- OpenAI ----------------------------------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-MODEL_ID = os.getenv("MODEL_ID", "gpt-5-mini")  # can flip in environment
+MODEL_ID = os.getenv("MODEL_ID", "gpt-5-mini")  # flip in env as needed
 
 # ----------------------- Tool Definition -----------------------------
 RADIOLOGY_SUMMARY_TOOL = [
@@ -34,11 +34,11 @@ RADIOLOGY_SUMMARY_TOOL = [
         "parameters": {
             "type": "object",
             "properties": {
-                "case_number": {"type": "string", "description": "The case number being analyzed."},
+                "case_number": {"type": "string"},
                 "major_findings": {"type": "array", "items": {"type": "string"}},
                 "minor_findings": {"type": "array", "items": {"type": "string"}},
                 "clarifications": {"type": "array", "items": {"type": "string"}},
-                "score": {"type": "integer", "description": "Score = 3×majors + 1×minors."}
+                "score": {"type": "integer"}
             },
             "required": ["case_number", "major_findings", "minor_findings", "clarifications", "score"],
             "additionalProperties": False
@@ -48,7 +48,6 @@ RADIOLOGY_SUMMARY_TOOL = [
 ]
 
 # ----------------------- Default prompt ------------------------------
-# (leave blank per user instruction; paste your own later)
 DEFAULT_PROMPT = """Developer: Radiology revision differ (GPT-5).
 
 <goal>
@@ -309,7 +308,7 @@ Attending: “Sigmoid diverticulitis with trace adjacent fluid; no abscess.”
 → score: 0
 
 </examples>
-"""
+"""  
 
 # --------------------------- Helpers ---------------------------------
 def normalize_text(text):
@@ -531,214 +530,162 @@ def index():
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
   <style>
-    :root {
-      --bg: #0f1115;
-      --panel: #171a21;
-      --panel-2: #1c2028;
-      --text: #e6e6e6;
-      --muted: #aeb4c0;
-      --primary: #4da3ff;
-      --primary-2: #2a84f2;
-      --green: #2bd47d;
-      --red: #ff6b6b;
-      --yellow: #ffd166;
-      --chip-major: #ff375f;
-      --chip-minor: #ffd166;
-      --chip-clar: #6ee7ff;
+    :root{
+      --bg:#0f1115;--panel:#171a21;--panel-2:#1c2028;--text:#e6e6e6;--muted:#aeb4c0;
+      --primary:#4da3ff;--primary-2:#2a84f2;--green:#2bd47d;--red:#ff6b6b;--chip-major:#ff375f;--chip-minor:#ffd166;--chip-clar:#6ee7ff;
+      --border:#2a2f3a;
     }
-    html, body { height: 100%; }
-    body {
+    html,body{height:100%}
+    body{
       background: radial-gradient(1200px 800px at 10% -30%, #141826 10%, transparent 40%) no-repeat,
                   radial-gradient(1200px 800px at 110% 130%, #121620 5%, transparent 40%) no-repeat,
                   var(--bg);
-      color: var(--text);
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+      color:var(--text);
+      font-family: system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
     }
-    a { color: var(--primary); text-decoration: none; }
-    a:hover { color: var(--primary-2); }
-    .appbar {
-      position: sticky; top: 0; z-index: 20;
-      backdrop-filter: blur(8px);
-      background: color-mix(in srgb, var(--panel) 82%, transparent);
-      border-bottom: 1px solid #2a2f3a;
-    }
-    .appbar .btn { border-radius: 10px; }
-    .panel {
-      background: var(--panel);
-      border: 1px solid #2a2f3a;
-      border-radius: 14px;
-    }
-    .panel-2 {
-      background: var(--panel-2);
-      border: 1px solid #2a2f3a;
-      border-radius: 12px;
-    }
-    .sidebar {
-      height: calc(100vh - 80px);
-      position: sticky; top: 80px; overflow: auto; padding-bottom: 1rem;
-    }
-    .case-nav a {
-      display: flex; align-items: center; gap: .5rem;
-      padding: .5rem .6rem; border-radius: 10px;
-      color: var(--text);
-    }
-    .case-nav a:hover { background: #222735; }
-    .kbd {
-      border: 1px solid #3a4252; border-bottom-color: #2e3543;
-      background: #1a1f2b; padding: .15rem .35rem; border-radius: 6px; font-size: .8rem; color: var(--muted);
-    }
-    textarea.form-control, textarea, input, .form-control {
-      background: #0f131b !important; color: var(--text) !important; border: 1px solid #2a2f3a !important;
-    }
-    textarea.form-control:focus, .form-control:focus {
-      box-shadow: 0 0 0 .25rem rgba(77,163,255,.15);
-      background: #0f131b !important; color: var(--text) !important;
-    }
-    .badge-score { background: #1e2a3d; color: #b7d3ff; border: 1px solid #2e405e; }
-    .chip { border-radius: 999px; padding: .2rem .55rem; font-weight: 600; border: 1px solid #334155; }
-    .chip.major { background: color-mix(in srgb, var(--chip-major) 18%, transparent); color: #ffc4cf; border-color: #5c2034; }
-    .chip.minor { background: color-mix(in srgb, var(--chip-minor) 18%, transparent); color: #fff2c4; border-color: #5c4a20; }
-    .chip.clar { background: color-mix(in srgb, var(--chip-clar) 18%, transparent); color: #c4f4ff; border-color: #20545c; }
-    .progress { background: #1b2330; height: 8px; border-radius: 10px; }
-    .progress-bar { background: linear-gradient(90deg, var(--primary), #7ab8ff); }
-    .tabs { border-bottom: 1px solid #2a2f3a; }
-    .tabs .nav-link { color: var(--muted); }
-    .tabs .nav-link.active { color: var(--text); background: #1a202c; border-color: #2a2f3a #2a2f3a #1a202c; }
-    .para { padding: .4rem .6rem; border-left: 3px solid transparent; border-radius: 8px; margin-bottom: .5rem; background: #0f131b; }
-    .para.equal { border-left-color: #2b364a; }
-    .para.ins { border-left-color: var(--green); background: rgba(43,212,125,.06); }
-    .para.del { border-left-color: var(--red); background: rgba(255,107,107,.06); text-decoration: line-through; opacity: .85; }
-    .para.rep { border-left-color: #7ab8ff; background: rgba(122,184,255,.06); }
-    .word.ins { color: var(--green); font-weight: 600; }
-    .word.del { color: var(--red); text-decoration: line-through; }
-    .toaster {
-      position: fixed; right: 18px; bottom: 18px; z-index: 50;
-      background: #1c2432; border: 1px solid #2a3547; color: #d7e3ff; padding: .65rem .8rem; border-radius: 10px; display:none;
-    }
-    .btn-ghost { background: #121722; border: 1px solid #273043; color: #c6d4f2; }
-    .btn-ghost:hover { background: #161c2a; color: #fff; }
-    .loading-bar { position: fixed; top: 0; left: 0; height: 3px; width: 0; background: linear-gradient(90deg, var(--primary), #7ab8ff); z-index: 1000; transition: width .3s ease; }
-    .case-card { scroll-margin-top: 90px; }
+    a{color:var(--primary)} a:hover{color:var(--primary-2)}
+    .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px}
+    .panel-2{background:var(--panel-2);border:1px solid var(--border);border-radius:12px}
+    .form-control,textarea,input{background:#0f131b!important;color:var(--text)!important;border:1px solid var(--border)!important}
+    .form-control:focus{box-shadow:0 0 0 .25rem rgba(77,163,255,.15)}
+    .badge-score{background:#1e2a3d;color:#b7d3ff;border:1px solid #2e405e}
+    .chip{border-radius:999px;padding:.2rem .55rem;font-weight:600;border:1px solid #334155}
+    .chip.major{background:color-mix(in srgb,var(--chip-major) 18%,transparent);color:#ffc4cf;border-color:#5c2034}
+    .chip.minor{background:color-mix(in srgb,var(--chip-minor) 18%,transparent);color:#fff2c4;border-color:#5c4a20}
+    .chip.clar{background:color-mix(in srgb,var(--chip-clar) 18%,transparent);color:#c4f4ff;border-color:#20545c}
+    .progress{background:#1b2330;height:8px;border-radius:10px}
+    .progress-bar{background:linear-gradient(90deg,var(--primary),#7ab8ff)}
+    .para{padding:.45rem .6rem;border-left:3px solid transparent;border-radius:8px;margin-bottom:.5rem;background:#0f131b}
+    .para.equal{border-left-color:#2b364a}
+    .para.ins{border-left-color:var(--green);background:rgba(43,212,125,.06)}
+    .para.del{border-left-color:var(--red);background:rgba(255,107,107,.06);text-decoration:line-through;opacity:.85}
+    .para.rep{border-left-color:#7ab8ff;background:rgba(122,184,255,.06)}
+    .word.ins{color:var(--green);font-weight:600}
+    .word.del{color:var(--red);text-decoration:line-through}
+    .loading-bar{position:fixed;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,var(--primary),#7ab8ff);z-index:1000;transition:width .3s ease}
+    .layout{display:grid;grid-template-columns: 280px 1fr; gap:14px}
+    .layout.collapsed{grid-template-columns: 0px 1fr}
+    .sidebar{position:sticky;top:12px;height:calc(100vh - 24px);overflow:auto;padding:10px;transition:width .25s ease, opacity .25s ease}
+    .layout.collapsed .sidebar{width:0;opacity:0;pointer-events:none}
+    .sidebar-toggle{position:sticky; top:12px; z-index:10}
+    .toggle-btn{border-radius:10px;border:1px solid var(--border);background:#121722;color:#c6d4f2}
+    .toggle-btn[aria-pressed="true"]{background:#0e1320;color:#9fb9ff}
+    .sort-btn{border-radius:10px;border:1px solid var(--border);background:#121722;color:#c6d4f2}
+    .sort-btn.active{outline:2px solid rgba(77,163,255,.35)}
+    .sort-btn .mode{font-weight:700;color:#b7d3ff}
+    .case-card{scroll-margin-top:90px}
+    .tabs{border-bottom:1px solid var(--border)}
+    .tabs .nav-link{color:#aeb4c0}
+    .tabs .nav-link.active{color:var(--text);background:#1a202c;border-color:var(--border) var(--border) #1a202c}
+    .kbd{border:1px solid #3a4252;border-bottom-color:#2e3543;background:#1a1f2b;padding:.15rem .35rem;border-radius:6px;font-size:.8rem;color:var(--muted)}
+    .toaster{position:fixed;right:18px;bottom:18px;z-index:50;background:#1c2432;border:1px solid #2a3547;color:#d7e3ff;padding:.65rem .8rem;border-radius:10px;display:none}
   </style>
 </head>
 <body>
   <div class="loading-bar" id="loadingBar"></div>
 
-  <!-- App Bar -->
-  <div class="appbar border-bottom">
-    <div class="container-fluid py-2">
-      <div class="d-flex align-items-center gap-2">
-        <div class="d-flex align-items-center gap-2 me-auto">
-          <i class="bi bi-activity text-primary fs-4"></i>
-          <strong>Compare Revisions</strong>
-          <span class="text-secondary small ms-2">Radiology Resident ↔ Attending</span>
-        </div>
-
-        <div class="d-none d-md-flex align-items-center gap-2">
-          <span class="kbd">J</span><span class="text-secondary small">next</span>
-          <span class="kbd">K</span><span class="text-secondary small">prev</span>
-          <span class="kbd">1–4</span><span class="text-secondary small">tabs</span>
-          <span class="kbd">F</span><span class="text-secondary small">search</span>
-          <span class="kbd">S</span><span class="text-secondary small">sort</span>
-          <span class="kbd">G</span><span class="text-secondary small">top</span>
-        </div>
-
-        <button class="btn btn-primary btn-sm" form="reportForm">
-          <i class="bi bi-lightning-charge"></i> Run
-        </button>
-        <button class="btn btn-ghost btn-sm" id="downloadAllBtn" type="button">
-          <i class="bi bi-download"></i> Download JSON
-        </button>
-      </div>
-    </div>
-  </div>
-
+  <!-- Top: Paste block at the top -->
   <div class="container-fluid mt-3">
-    <div class="row g-3">
-      <!-- Left: Input -->
-      <div class="col-12 col-xl-6">
-        <div class="panel p-3">
-          <form method="POST" id="reportForm">
-            <div class="row g-3">
-              <div class="col-12">
-                <label class="form-label">Paste your reports block</label>
-                <textarea id="report_text" name="report_text" class="form-control" rows="10" placeholder="Case 1
-Resident:
+    <div class="panel p-3 mb-3">
+      <form method="POST" id="reportForm">
+        <div class="row g-3">
+          <div class="col-12">
+            <label class="form-label fw-semibold">Paste your reports block</label>
+            <textarea id="report_text" name="report_text" class="form-control" rows="10" placeholder="Case 1
+Resident Report:
 ...
-Attending:
+
+Attending Report:
 ...
 
 Case 2
-Resident:
+Resident Report:
 ...
-Attending:
+
+Attending Report:
 ...">{{ request.form.get('report_text', '') }}</textarea>
-              </div>
-              <div class="col-12">
-                <label class="form-label">Custom prompt (optional)</label>
-                <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="6" placeholder="Paste your system/developer prompt here (optional).">{{ custom_prompt }}</textarea>
-              </div>
-              <div class="col-12 d-flex gap-2 flex-wrap">
-                <button class="btn btn-primary">
-                  <i class="bi bi-lightning-charge"></i> Compare & Summarize
-                </button>
-                <button class="btn btn-ghost" type="button" id="clearBtn">
-                  <i class="bi bi-eraser"></i> Clear
-                </button>
-                <button class="btn btn-ghost" type="button" id="demoBtn">
-                  <i class="bi bi-journal-text"></i> Load Demo
-                </button>
-              </div>
-            </div>
-          </form>
+          </div>
+          <div class="col-12">
+            <label class="form-label fw-semibold">Custom prompt (optional)</label>
+            <textarea id="custom_prompt" name="custom_prompt" class="form-control" rows="5" placeholder="Paste your system/developer prompt here (optional).">{{ custom_prompt }}</textarea>
+          </div>
+          <div class="col-12 d-flex gap-2 flex-wrap">
+            <button class="btn btn-primary">
+              <i class="bi bi-lightning-charge"></i> Compare & Summarize
+            </button>
+            <button class="btn btn-outline-light" type="button" id="clearBtn">
+              <i class="bi bi-eraser"></i> Clear
+            </button>
+            <button class="btn btn-outline-light" type="button" id="demoBtn">
+              <i class="bi bi-journal-text"></i> Load Demo
+            </button>
+            <button class="btn btn-outline-info" type="button" id="downloadAllBtn">
+              <i class="bi bi-download"></i> Download JSON
+            </button>
+            <!-- Sort mode visual state -->
+            <button class="sort-btn ms-auto px-3 py-2" type="button" id="sortCaseBtn" data-mode="number" aria-pressed="true" title="Cycle sort (Number → Change → Score)">
+              <i class="bi bi-sort-numeric-down me-1"></i>
+              Sort: <span class="mode" id="sortModeLabel">Case #</span>
+            </button>
+            <!-- Sidebar collapsible toggle -->
+            <button class="toggle-btn px-3 py-2" type="button" id="toggleSidebarBtn" aria-pressed="false" title="Show/Hide case list">
+              <i class="bi bi-layout-sidebar-inset me-1"></i>
+              Case List
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Beneath: Two-column area with collapsible left sidebar and main content filling width -->
+  <div class="container-fluid">
+    <div id="gridLayout" class="layout">
+      <!-- Left floating/collapsible sidebar -->
+      <div class="sidebar panel">
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <i class="bi bi-list-stars text-primary"></i>
+          <strong>Cases</strong>
+          <span class="ms-auto badge badge-score" id="caseCountBadge">0</span>
+        </div>
+        <input id="searchInput" class="form-control form-control-sm mb-2" placeholder="Search text or Case # (press F)"/>
+        <div class="d-flex flex-wrap gap-2 mb-2">
+          <button class="btn btn-outline-secondary btn-sm" id="filterMajorsBtn"><i class="bi bi-exclamation-octagon"></i> Majors only</button>
+          <button class="btn btn-outline-secondary btn-sm" id="filterErrorsBtn"><i class="bi bi-bug"></i> Errors only</button>
+          <button class="btn btn-outline-secondary btn-sm" id="expandAllBtn"><i class="bi bi-arrows-expand"></i> Expand all</button>
+          <button class="btn btn-outline-secondary btn-sm" id="collapseAllBtn"><i class="bi bi-arrows-collapse"></i> Collapse all</button>
+        </div>
+        <div id="aggregateBlock" class="panel-2 p-2 mb-2 d-none">
+          <div class="d-flex align-items-center gap-2 mb-1">
+            <span class="chip major">Major <span id="aggMajor">0</span></span>
+            <span class="chip minor">Minor <span id="aggMinor">0</span></span>
+            <span class="chip clar">Clar <span id="aggClar">0</span></span>
+          </div>
+          <div class="progress" title="Percent major across all items">
+            <div class="progress-bar" id="aggBar" style="width:0%"></div>
+          </div>
+        </div>
+        <div id="caseNav" class="case-nav"></div>
+        <div class="mt-3 small text-secondary">
+          <div><span class="kbd">J</span>/<span class="kbd">K</span> next/prev</div>
+          <div><span class="kbd">1–4</span> tabs</div>
+          <div><span class="kbd">F</span> focus search</div>
+          <div><span class="kbd">S</span> cycle sort</div>
+          <div><span class="kbd">G</span><span class="mx-1">G</span> top</div>
         </div>
       </div>
 
-      <!-- Right: Results split (sidebar + main) -->
-      <div class="col-12 col-xl-6">
-        <div class="row g-3">
-          <div class="col-12 col-lg-5">
-            <div class="panel p-3 sidebar">
-              <div class="d-flex align-items-center gap-2 mb-2">
-                <i class="bi bi-list-stars text-primary"></i>
-                <strong>Cases</strong>
-                <span class="ms-auto badge badge-score" id="caseCountBadge">0</span>
-              </div>
-              <input id="searchInput" class="form-control form-control-sm mb-2" placeholder="Search text or Case # (press F)"/>
-              <div class="d-flex flex-wrap gap-2 mb-2">
-                <button class="btn btn-ghost btn-sm" id="sortCaseBtn" data-mode="number"><i class="bi bi-sort-numeric-down"></i> Sort</button>
-                <button class="btn btn-ghost btn-sm" id="filterMajorsBtn"><i class="bi bi-exclamation-octagon"></i> Majors only</button>
-                <button class="btn btn-ghost btn-sm" id="filterErrorsBtn"><i class="bi bi-bug"></i> Errors only</button>
-                <button class="btn btn-ghost btn-sm" id="expandAllBtn"><i class="bi bi-arrows-expand"></i> Expand all</button>
-                <button class="btn btn-ghost btn-sm" id="collapseAllBtn"><i class="bi bi-arrows-collapse"></i> Collapse all</button>
-              </div>
-              <div id="aggregateBlock" class="panel-2 p-2 mb-2 d-none">
-                <div class="d-flex align-items-center gap-2 mb-1">
-                  <span class="chip major">Major <span id="aggMajor">0</span></span>
-                  <span class="chip minor">Minor <span id="aggMinor">0</span></span>
-                  <span class="chip clar">Clar <span id="aggClar">0</span></span>
-                </div>
-                <div class="progress">
-                  <div class="progress-bar" id="aggBar" style="width: 0%"></div>
-                </div>
-              </div>
-              <div id="caseNav" class="case-nav"></div>
-            </div>
+      <!-- Main content -->
+      <div>
+        <div id="resultsPanel" class="panel p-2">
+          <div id="emptyState" class="text-center text-secondary p-5">
+            <i class="bi bi-arrow-up-right-square text-primary fs-1 d-block mb-2"></i>
+            <div class="mb-1">Paste reports above and click <strong>Compare &amp; Summarize</strong>.</div>
+            <div class="small">Keyboard: J/K to move, 1–4 to switch tabs.</div>
           </div>
-
-          <div class="col-12 col-lg-7">
-            <div id="resultsPanel" class="panel p-2">
-              <div id="emptyState" class="text-center text-secondary p-5">
-                <i class="bi bi-arrow-up-right-square text-primary fs-1 d-block mb-2"></i>
-                <div class="mb-1">Paste reports and click <strong>Compare &amp; Summarize</strong>.</div>
-                <div class="small">Keyboard: J/K to move, 1–4 to switch tabs.</div>
-              </div>
-              <div id="caseContainer" class="d-none"></div>
-            </div>
-          </div>
+          <div id="caseContainer" class="d-none"></div>
         </div>
       </div>
-
     </div>
   </div>
 
@@ -758,16 +705,48 @@ Attending:
     const aggClar = document.getElementById('aggClar');
     const aggBar = document.getElementById('aggBar');
 
+    const gridLayout = document.getElementById('gridLayout');
+    const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
+
+    const sortBtn = document.getElementById('sortCaseBtn');
+    const sortModeLabel = document.getElementById('sortModeLabel');
+    const sortModes = ['number','change','score'];
+    const sortLabels = { number: 'Case #', change: 'Δ Change', score: 'Score' };
+    const sortIcons = {
+      number: 'bi-sort-numeric-down',
+      change: 'bi-lightning-charge',
+      score: 'bi-trophy'
+    };
+
     // ---------- Loading bar ----------
     const startLoading = () => { loadingBar.style.width = '35%'; };
     const midLoading = () => { loadingBar.style.width = '70%'; };
     const endLoading = () => { loadingBar.style.width = '100%'; setTimeout(()=>{ loadingBar.style.width='0%'; }, 400); };
 
     // ---------- Toast ----------
-    function toast(msg, ms=1800) {
+    function toast(msg, ms=1600) {
       toaster.textContent = msg;
       toaster.style.display = 'block';
       setTimeout(()=>{ toaster.style.display = 'none'; }, ms);
+    }
+
+    // ---------- Sidebar collapse ----------
+    toggleSidebarBtn.addEventListener('click', () => {
+      const pressed = toggleSidebarBtn.getAttribute('aria-pressed') === 'true';
+      toggleSidebarBtn.setAttribute('aria-pressed', String(!pressed));
+      gridLayout.classList.toggle('collapsed', !pressed === true);
+      toggleSidebarBtn.innerHTML = (pressed)
+        ? '<i class="bi bi-layout-sidebar-inset me-1"></i> Case List'
+        : '<i class="bi bi-layout-sidebar-inset-reverse me-1"></i> Case List';
+    });
+
+    // ---------- Sort button visual state ----------
+    function applySortVisual(mode) {
+      sortBtn.setAttribute('data-mode', mode);
+      sortModeLabel.textContent = sortLabels[mode];
+      sortBtn.classList.add('active');
+      // swap icon
+      sortBtn.innerHTML = '<i class="bi '+sortIcons[mode]+' me-1"></i> Sort: <span class="mode" id="sortModeLabel">'+sortLabels[mode]+'</span>';
     }
 
     // ---------- Navigation render ----------
@@ -786,9 +765,10 @@ Attending:
       navEl.innerHTML = '';
       list.forEach(c => {
         const score = (c.summary && c.summary.score) || 0;
-        const link = document.createElement('a');
-        link.href = '#case' + c.case_num;
-        link.innerHTML = `
+        const a = document.createElement('a');
+        a.href = '#case' + c.case_num;
+        a.className = 'd-block rounded mb-1 px-2 py-1';
+        a.innerHTML = `
           <div class="d-flex w-100 align-items-center">
             <div class="me-auto">
               <strong>Case ${c.case_num}</strong>
@@ -798,7 +778,7 @@ Attending:
             <div class="d-none d-xl-block">${formatChipCounts(c.summary)}</div>
           </div>
         `;
-        navEl.appendChild(link);
+        navEl.appendChild(a);
       });
       caseCountBadge.textContent = list.length;
     }
@@ -835,8 +815,8 @@ Attending:
             <span class="badge badge-score">Score ${s.score ?? 0}</span>
             <span class="ms-2 text-secondary small">Δ ${c.percentage_change}%</span>
             <span class="ms-auto d-flex gap-2">
-              <button class="btn btn-ghost btn-sm" onclick='copyJSON(${JSON.stringify(JSON.stringify(s))})'><i class="bi bi-clipboard"></i> Copy JSON</button>
-              <button class="btn btn-ghost btn-sm" data-toggle="collapse" data-target="#body${c.case_num}" onclick="toggleCollapse('${c.case_num}')">
+              <button class="btn btn-outline-light btn-sm" onclick='copyJSON(${JSON.stringify(JSON.stringify(s))})'><i class="bi bi-clipboard"></i> Copy JSON</button>
+              <button class="btn btn-outline-light btn-sm" data-toggle="collapse" data-target="#body${c.case_num}" onclick="toggleCollapse('${c.case_num}')">
                 <i class="bi bi-arrows-collapse"></i> Toggle
               </button>
             </span>
@@ -871,19 +851,19 @@ Attending:
             <div class="tab-content p-2">
               <div class="tab-pane fade show active" id="tab-pane-sum-${c.case_num}" role="tabpanel" tabindex="0">
                 <div class="row g-2">
-                  <div class="col-12 col-md-4">
+                  <div class="col-12 col-lg-4">
                     <div class="panel p-2 h-100">
                       <div class="d-flex align-items-center gap-2 mb-2"><i class="bi bi-exclamation-octagon text-danger"></i><strong>Major</strong></div>
                       ${majorsList}
                     </div>
                   </div>
-                  <div class="col-12 col-md-4">
+                  <div class="col-12 col-lg-4">
                     <div class="panel p-2 h-100">
                       <div class="d-flex align-items-center gap-2 mb-2"><i class="bi bi-info-circle text-warning"></i><strong>Minor</strong></div>
                       ${minorsList}
                     </div>
                   </div>
-                  <div class="col-12 col-md-4">
+                  <div class="col-12 col-lg-4">
                     <div class="panel p-2 h-100">
                       <div class="d-flex align-items-center gap-2 mb-2"><i class="bi bi-pencil-square text-info"></i><strong>Clarifications</strong></div>
                       ${clarList}
@@ -938,7 +918,6 @@ Attending:
       aggBar.style.width = total ? Math.min(100, Math.round((M/Math.max(1,total))*100)) + '%' : '0%';
       aggregateBlock.classList.remove('d-none');
 
-      // Cards
       containerEl.innerHTML = data.map(caseCardHTML).join('');
       renderNav(data);
       endLoading();
@@ -968,9 +947,7 @@ Attending:
         if (c.resident_report?.toLowerCase().includes(q)) return true;
         if (c.attending_report?.toLowerCase().includes(q)) return true;
         const s = c.summary;
-        if (s) {
-          return JSON.stringify(s).toLowerCase().includes(q);
-        }
+        if (s) { return JSON.stringify(s).toLowerCase().includes(q); }
         return false;
       });
     }
@@ -980,6 +957,8 @@ Attending:
       if (caseData && caseData.length) {
         renderAll(caseData);
       }
+      // initialize sort visual
+      applySortVisual('number');
     });
 
     document.getElementById('reportForm').addEventListener('submit', () => {
@@ -1008,7 +987,7 @@ Possible segmental PE in RLL.
 Attending Report:
 No pulmonary embolism.`;
       document.getElementById('report_text').value = demo;
-      toast('Demo loaded. Click Run.');
+      toast('Demo loaded. Click Compare & Summarize.');
     });
 
     const searchInput = document.getElementById('searchInput');
@@ -1018,16 +997,13 @@ No pulmonary embolism.`;
       renderAll(list);
     });
 
-    document.getElementById('sortCaseBtn').addEventListener('click', (e) => {
-      const btn = e.currentTarget;
-      const mode = btn.getAttribute('data-mode');
-      const modes = ['number', 'change', 'score'];
-      const idx = modes.indexOf(mode);
-      const next = modes[(idx+1)%modes.length];
-      btn.setAttribute('data-mode', next);
+    sortBtn.addEventListener('click', (e) => {
+      const current = sortBtn.getAttribute('data-mode');
+      const idx = sortModes.indexOf(current);
+      const next = sortModes[(idx+1)%sortModes.length];
       sortBy(next);
+      applySortVisual(next);
       renderAll(caseData);
-      toast(`Sorted by ${next}`);
     });
 
     document.getElementById('filterMajorsBtn').addEventListener('click', () => {
@@ -1077,7 +1053,7 @@ No pulmonary embolism.`;
       if (!str) return '';
       return str.replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[m]));
     }
-    window.escapeHTML = escapeHTML; // for templated calls
+    window.escapeHTML = escapeHTML;
 
     // ---------- Keyboard shortcuts ----------
     let currentIndex = 0;
@@ -1102,7 +1078,6 @@ No pulmonary embolism.`;
     let gPressedOnce = false;
     document.addEventListener('keydown', (e) => {
       if (['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) {
-        // allow typing
         if (e.key.toLowerCase()==='escape') document.activeElement.blur();
         return;
       }
@@ -1115,7 +1090,7 @@ No pulmonary embolism.`;
       } else if (e.key.toLowerCase()==='f') {
         e.preventDefault(); document.getElementById('searchInput').focus();
       } else if (e.key.toLowerCase()==='s') {
-        e.preventDefault(); document.getElementById('sortCaseBtn').click();
+        e.preventDefault(); sortBtn.click();
       } else if (e.key.toLowerCase()==='g') {
         if (gPressedOnce) {
           window.scrollTo({top:0, behavior:'smooth'}); gPressedOnce=false;
