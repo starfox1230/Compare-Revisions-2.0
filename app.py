@@ -648,6 +648,9 @@ def index():
       style="width: 240px; height: 240px;" loop autoplay>
     </dotlottie-player>
     <p>Analyzing reports… this may take a moment.</p>
+    <p id="waitTimerText" aria-live="polite" class="small text-secondary" style="margin-top:.25rem;">
+      Waiting: <span id="waitTimer">00:00</span>
+</p>
   </div>
   <div class="loading-bar" id="loadingBar"></div>
 
@@ -790,15 +793,43 @@ Attending Report:
     const toaster = document.getElementById('toaster');
     const loadingBar = document.getElementById('loadingBar');
     const overlayEl = document.getElementById('loading-overlay');
+    let waitTimerInterval = null;
+    let waitStart = null;
+    
+    function formatDuration(ms){
+      const s = Math.floor(ms / 1000);
+      const mm = String(Math.floor(s / 60)).padStart(2, '0');
+      const ss = String(s % 60).padStart(2, '0');
+      return `${mm}:${ss}`;
+    }
+
     function showOverlay(msg) {
-      if (msg) overlayEl.querySelector('p').textContent = msg;
+      const msgEl = document.getElementById('loadingMsg');
+      if (msgEl && msg) msgEl.textContent = msg;
+    
+      const timerEl = document.getElementById('waitTimer');
+      if (timerEl) timerEl.textContent = '00:00';
+    
+      waitStart = Date.now();
+      if (waitTimerInterval) clearInterval(waitTimerInterval);
+      waitTimerInterval = setInterval(() => {
+        const timerEl = document.getElementById('waitTimer');
+        if (timerEl) timerEl.textContent = formatDuration(Date.now() - waitStart);
+      }, 1000);
+    
       overlayEl.style.display = 'flex';
       overlayEl.setAttribute('aria-hidden', 'false');
     }
+    
     function hideOverlay() {
       overlayEl.style.display = 'none';
       overlayEl.setAttribute('aria-hidden', 'true');
+      if (waitTimerInterval) {
+        clearInterval(waitTimerInterval);
+        waitTimerInterval = null;
+      }
     }
+
     const aggregateBlock = document.getElementById('aggregateBlock');
     const aggMajor = document.getElementById('aggMajor');
     const aggMinor = document.getElementById('aggMinor');
