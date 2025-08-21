@@ -489,7 +489,7 @@ def extract_cases(text, custom_prompt):
     if not cases_data:
         return parsed_cases
 
-    ai_summaries = process_cases(cases_data, custom_prompt, max_workers=50)
+    ai_summaries = process_cases(cases_data, custom_prompt, max_workers=100)
     summaries_by_case_num = {str(s.get('case_number')): s for s in ai_summaries}
 
     for case_text, case_num in cases_data:
