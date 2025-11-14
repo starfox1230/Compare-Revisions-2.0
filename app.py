@@ -334,98 +334,13 @@ def calculate_change_percentage(resident_text, attending_text):
     matcher = difflib.SequenceMatcher(None, resident_text.split(), attending_text.split())
     return round((1 - matcher.ratio()) * 100, 2)
 
-SECTION_HEADING_CONNECTORS = {
-    "AND", "OR", "OF", "THE", "FOR", "TO", "WITH", "WITHOUT",
-    "IN", "ON", "AT", "BY", "VS", "VERSUS", "&", "/"
-}
-
-
-def looks_like_section_heading(segment):
-    tokens = segment.split()
-    if not tokens:
-        return False
-
-    has_upper = False
-    for token in tokens:
-        cleaned = re.sub(r'[^A-Za-z0-9/&\-]', '', token)
-        if not cleaned:
-            continue
-
-        upper_cleaned = cleaned.upper()
-        if upper_cleaned in SECTION_HEADING_CONNECTORS:
-            continue
-
-        if cleaned.isupper() or upper_cleaned.isdigit():
-            has_upper = True
-            continue
-
-        return False
-
-    return has_upper
-
-
-CONNECTOR_PATTERN = r'(?i:and|or|of|the|for|to|with|without|in|on|at|by|vs|versus|and/or|&|/)'
-UPPER_TOKEN_PATTERN = r'(?:[A-Z0-9][A-Z0-9/&\-]*)'
-
-SECTION_HEADING_PATTERN = re.compile(
-    rf'(?P<prefix>[^\S\n]*)'
-    rf'(?P<heading>{UPPER_TOKEN_PATTERN}(?:\s+(?:(?:{CONNECTOR_PATTERN})\s+)?{UPPER_TOKEN_PATTERN})*)'
-    r'\s*:(?=\s)',
-    re.MULTILINE
-)
-
-NUMBERED_ITEM_PATTERN = re.compile(
-    r'(?P<prefix>[^\S\n]*)(?P<number>\d+\.\s+)',
-    re.MULTILINE
-)
-
-
-def apply_structural_linebreaks(text):
-    if not text:
-        return ""
-
-    def heading_replacer(match):
-        heading = match.group('heading').strip()
-        start = match.start()
-
-        if start == 0:
-            return match.group(0)
-
-        if text[start - 1] == '\n':
-            return match.group(0)
-
-        if looks_like_section_heading(heading):
-            return f"\n\n{heading}:"
-
-        return match.group(0)
-
-    text = SECTION_HEADING_PATTERN.sub(heading_replacer, text)
-
-    def number_replacer(match):
-        start = match.start()
-
-        if start == 0:
-            return match.group('number')
-
-        if text[start - 1] == '\n':
-            return match.group('number')
-
-        return f"\n\n{match.group('number')}"
-
-    text = NUMBERED_ITEM_PATTERN.sub(number_replacer, text)
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    return text
-
-
 def split_into_paragraphs(text):
     paragraphs = re.split(r'\n\s*\n+', text)
     return [para.strip() for para in paragraphs if para.strip()]
 
 def create_diff_by_section(resident_text, attending_text):
-    resident_text = apply_structural_linebreaks(normalize_text(resident_text))
-    attending_text = apply_structural_linebreaks(
-        normalize_text(remove_attending_review_line(attending_text))
-    )
+    resident_text = normalize_text(resident_text)
+    attending_text = normalize_text(remove_attending_review_line(attending_text))
     resident_paragraphs = split_into_paragraphs(resident_text)
     attending_paragraphs = split_into_paragraphs(attending_text)
 
@@ -607,16 +522,11 @@ def extract_cases(text, custom_prompt):
             attending_report = case_text.split("\nAttending Report:")[1].strip()
             ai_summary = summaries_by_case_num.get(case_num, {})
 
-            resident_display = apply_structural_linebreaks(normalize_text(resident_report))
-            attending_display = apply_structural_linebreaks(
-                normalize_text(remove_attending_review_line(attending_report))
-            )
-
             parsed_cases.append({
                 'case_num': case_num,
-                'resident_report': resident_display,
-                'attending_report': attending_display,
-                'percentage_change': calculate_change_percentage(resident_display, attending_display),
+                'resident_report': resident_report,
+                'attending_report': attending_report,
+                'percentage_change': calculate_change_percentage(resident_report, remove_attending_review_line(attending_report)),
                 'diff': create_diff_by_section(resident_report, attending_report),
                 'summary': ai_summary if 'error' not in ai_summary else None,
                 'summary_error': ai_summary.get('error')
