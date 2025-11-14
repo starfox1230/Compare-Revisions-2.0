@@ -37,9 +37,81 @@ RADIOLOGY_SUMMARY_TOOL = [
             "type": "object",
             "properties": {
                 "case_number": {"type": "string"},
-                "major_findings": {"type": "array", "items": {"type": "string"}},
-                "minor_findings": {"type": "array", "items": {"type": "string"}},
-                "clarifications": {"type": "array", "items": {"type": "string"}},
+                "major_findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "summary_text": {"type": "string"},
+                            "resident_snippet": {"type": "string"},
+                            "attending_snippet": {"type": "string"},
+                            "attending_highlights": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            },
+                            "resident_highlights": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            }
+                        },
+                        "required": [
+                            "summary_text",
+                            "attending_snippet",
+                            "attending_highlights"
+                        ],
+                        "additionalProperties": False
+                    }
+                },
+                "minor_findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "summary_text": {"type": "string"},
+                            "resident_snippet": {"type": "string"},
+                            "attending_snippet": {"type": "string"},
+                            "attending_highlights": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            },
+                            "resident_highlights": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            }
+                        },
+                        "required": [
+                            "summary_text",
+                            "attending_snippet",
+                            "attending_highlights"
+                        ],
+                        "additionalProperties": False
+                    }
+                },
+                "clarifications": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "summary_text": {"type": "string"},
+                            "resident_snippet": {"type": "string"},
+                            "attending_snippet": {"type": "string"},
+                            "attending_highlights": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            },
+                            "resident_highlights": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            }
+                        },
+                        "required": [
+                            "summary_text",
+                            "attending_snippet",
+                            "attending_highlights"
+                        ],
+                        "additionalProperties": False
+                    }
+                },
                 "score": {"type": "integer"}
             },
             "required": ["case_number", "major_findings", "minor_findings", "clarifications", "score"],
@@ -197,10 +269,45 @@ Formatting:
 - No speculation; no new facts beyond the attending’s text.
 </tie_breakers_and_hygiene>
 
+<output_schema_details>
+Each of the three arrays (major_findings, minor_findings, clarifications)
+must contain OBJECTS, not plain strings.
+
+For each finding object:
+
+- summary_text:
+  - A concise sentence or phrase summarizing the change, exactly as you would have written each list item previously.
+  - You may include your parenthetical type/modifiers here (e.g., "(perceptual; new critical finding)").
+  - This is what will be shown to the learner in the summary column.
+
+- resident_snippet:
+  - A short excerpt copied directly from the RESIDENT report that corresponds to this change.
+  - If the resident did not mention this entity at all (purely perceptual addition), use an empty string "".
+
+- attending_snippet:
+  - A short excerpt copied directly from the ATTENDING report that corresponds to this change.
+  - This MUST be a literal substring of the attending report, not paraphrased.
+
+- attending_highlights:
+  - An array of 1–3 short words or phrases taken VERBATIM from attending_snippet
+    that represent the key new or corrected concept.
+  - These are the phrases whose text you want the learner’s eye to go to first
+    (e.g., "active hemorrhage", "right pneumothorax", "no PE").
+
+- resident_highlights:
+  - Optional. An array of up to 1–3 short words or phrases taken VERBATIM from resident_snippet
+    that represent the incorrect or missing idea (e.g., "no pneumothorax", "probable PE").
+  - If not applicable, return an empty array [].
+</output_schema_details>
+
 <validation_checklist>
 Before output:
-- Only attending-introduced or attending-corrected content appears in arrays.
-- CLARIFICATIONS contains descriptor/wording/formatting items only.
+- Only attending-introduced or attending-corrected content appears as finding objects.
+- Each item in major_findings, minor_findings, clarifications is an OBJECT with:
+  summary_text, attending_snippet, attending_highlights
+  (and optional resident_snippet, resident_highlights).
+- attending_highlights phrases are exact substrings of attending_snippet.
+- resident_highlights phrases (if present) are exact substrings of resident_snippet.
 - Score = (3 × count(major_findings)) + (1 × count(minor_findings)).
 - Exact case_number is echoed.
 - JSON matches the provided schema; no extra keys; no prose.
@@ -216,97 +323,200 @@ Do not include any prose before or after the JSON.
 Example 1 — Same-entity descriptor (no management delta):
 Resident: “PE in RLL segmental branches.”
 Attending: “PE in RLL subsegmental branches; small clot burden.”
-→ major: []
-→ minor: []
-→ clarifications: ["PE location refined to subsegmental; small clot burden (descriptor: location; descriptor: certainty)"]
+→ major_findings: []
+→ minor_findings: []
+→ clarifications: [
+  {
+    "summary_text": "PE location refined to subsegmental; small clot burden (descriptor: location; descriptor: certainty)",
+    "resident_snippet": "PE in RLL segmental branches.",
+    "attending_snippet": "PE in RLL subsegmental branches; small clot burden.",
+    "attending_highlights": ["subsegmental branches", "small clot burden"],
+    "resident_highlights": ["segmental branches"]
+  }
+]
 → score: 0
 
 Example 2 — New urgent finding:
 Resident: “No pneumothorax.”
 Attending: “Small right pneumothorax.”
-→ major: ["Right pneumothorax (perceptual; new critical finding)"]
-→ minor: []
+→ major_findings: [
+  {
+    "summary_text": "Right pneumothorax (perceptual; new critical finding)",
+    "resident_snippet": "No pneumothorax.",
+    "attending_snippet": "Small right pneumothorax.",
+    "attending_highlights": ["right pneumothorax"],
+    "resident_highlights": ["No pneumothorax"]
+  }
+]
+→ minor_findings: []
 → clarifications: []
 → score: 3
 
 Example 3 — Critical negation (definite → no):
 Resident: “Acute PE; start anticoagulation.”
 Attending: “No pulmonary embolism.”
-→ major: ["No pulmonary embolism (interpretive; critical correction; resident said acute PE)"]
-→ minor: []
+→ major_findings: [
+  {
+    "summary_text": "No pulmonary embolism (interpretive; critical correction; resident said acute PE)",
+    "resident_snippet": "Acute PE; start anticoagulation.",
+    "attending_snippet": "No pulmonary embolism.",
+    "attending_highlights": ["No pulmonary embolism"],
+    "resident_highlights": ["Acute PE"]
+  }
+]
+→ minor_findings: []
 → clarifications: []
 → score: 3
 
 Example 4 — Probable → no (soft negation):
 Resident: “Probable segmental PE, RLL.”
 Attending: “No PE.”
-→ major: []
-→ minor: ["No PE (interpretive; correction; resident said probable)"]
+→ major_findings: []
+→ minor_findings: [
+  {
+    "summary_text": "No PE (interpretive; correction; resident said probable)",
+    "resident_snippet": "Probable segmental PE, RLL.",
+    "attending_snippet": "No PE.",
+    "attending_highlights": ["No PE"],
+    "resident_highlights": ["Probable segmental PE"]
+  }
+]
 → clarifications: []
 → score: 1
 
 Example 5 — Questionable → no (wording cleanup):
 Resident: “Questionable subsegmental PE.”
 Attending: “No PE.”
-→ major: []
-→ minor: []
-→ clarifications: ["No PE (interpretive; descriptor: certainty; resident said questionable)"]
+→ major_findings: []
+→ minor_findings: []
+→ clarifications: [
+  {
+    "summary_text": "No PE (interpretive; descriptor: certainty; resident said questionable)",
+    "resident_snippet": "Questionable subsegmental PE.",
+    "attending_snippet": "No PE.",
+    "attending_highlights": ["No PE"],
+    "resident_highlights": ["Questionable subsegmental PE"]
+  }
+]
 → score: 0
 
 Example 6 — Malpositioned device:
 Resident: “NG tube present.”
 Attending: “NG tube coiled in esophagus.”
-→ major: ["Malpositioned NG tube (esophageal) (perceptual; malpositioned device)"]
-→ minor: []
+→ major_findings: [
+  {
+    "summary_text": "Malpositioned NG tube (esophageal) (perceptual; malpositioned device)",
+    "resident_snippet": "NG tube present.",
+    "attending_snippet": "NG tube coiled in esophagus.",
+    "attending_highlights": ["NG tube coiled in esophagus"],
+    "resident_highlights": ["NG tube present"]
+  }
+]
+→ minor_findings: []
 → clarifications: []
 → score: 3
 
 Example 7 — Free air artifact (critical downshift):
 Resident: “Free air under diaphragm.”
 Attending: “No free air; prior image was artifact.”
-→ major: ["No free air (interpretive; critical correction; artifact resolved)"]
-→ minor: []
+→ major_findings: [
+  {
+    "summary_text": "No free air (interpretive; critical correction; artifact resolved)",
+    "resident_snippet": "Free air under diaphragm.",
+    "attending_snippet": "No free air; prior image was artifact.",
+    "attending_highlights": ["No free air"],
+    "resident_highlights": ["Free air under diaphragm"]
+  }
+]
+→ minor_findings: []
 → clarifications: []
 → score: 3
 
 Example 8 — Non-urgent correction:
 Resident: “Normal abdomen.”
 Attending: “Benign hepatic hemangioma; cholelithiasis without cholecystitis.”
-→ major: []
-→ minor: ["Hepatic hemangioma (perceptual; classification change; follow-up impact)", "Cholelithiasis without cholecystitis (perceptual)"]
+→ major_findings: []
+→ minor_findings: [
+  {
+    "summary_text": "Hepatic hemangioma (perceptual; classification change; follow-up impact)",
+    "resident_snippet": "Normal abdomen.",
+    "attending_snippet": "Benign hepatic hemangioma; cholelithiasis without cholecystitis.",
+    "attending_highlights": ["hepatic hemangioma"],
+    "resident_highlights": ["Normal abdomen"]
+  },
+  {
+    "summary_text": "Cholelithiasis without cholecystitis (perceptual)",
+    "resident_snippet": "Normal abdomen.",
+    "attending_snippet": "Benign hepatic hemangioma; cholelithiasis without cholecystitis.",
+    "attending_highlights": ["cholelithiasis", "without cholecystitis"],
+    "resident_highlights": ["Normal abdomen"]
+  }
+]
 → clarifications: []
 → score: 2
 
 Example 9 — Threshold crossing (upgrade to MINOR):
 Resident: “Pulmonary nodule 5 mm.”
 Attending: “Pulmonary nodule 8 mm (follow-up recommended).”
-→ major: []
-→ minor: ["Pulmonary nodule 8 mm (descriptor: size; threshold crossed; follow-up impact)"]
+→ major_findings: []
+→ minor_findings: [
+  {
+    "summary_text": "Pulmonary nodule 8 mm (descriptor: size; threshold crossed; follow-up impact)",
+    "resident_snippet": "Pulmonary nodule 5 mm.",
+    "attending_snippet": "Pulmonary nodule 8 mm (follow-up recommended).",
+    "attending_highlights": ["8 mm", "follow-up recommended"],
+    "resident_highlights": ["5 mm"]
+  }
+]
 → clarifications: []
 → score: 1
 
 Example 10 — Laterality/location correction:
 Resident: “Left lower lobe pneumonia.”
 Attending: “Right lower lobe pneumonia.”
-→ major: []
-→ minor: ["Right lower lobe pneumonia (interpretive; laterality correction)"]
+→ major_findings: []
+→ minor_findings: [
+  {
+    "summary_text": "Right lower lobe pneumonia (interpretive; laterality correction)",
+    "resident_snippet": "Left lower lobe pneumonia.",
+    "attending_snippet": "Right lower lobe pneumonia.",
+    "attending_highlights": ["Right lower lobe pneumonia"],
+    "resident_highlights": ["Left lower lobe pneumonia"]
+  }
+]
 → clarifications: []
 → score: 1
 
 Example 11 — ICH added:
 Resident: “No acute intracranial hemorrhage.”
 Attending: “Small acute subarachnoid hemorrhage.”
-→ major: ["Acute subarachnoid hemorrhage (perceptual; new critical finding)"]
-→ minor: []
+→ major_findings: [
+  {
+    "summary_text": "Acute subarachnoid hemorrhage (perceptual; new critical finding)",
+    "resident_snippet": "No acute intracranial hemorrhage.",
+    "attending_snippet": "Small acute subarachnoid hemorrhage.",
+    "attending_highlights": ["acute subarachnoid hemorrhage"],
+    "resident_highlights": ["No acute intracranial hemorrhage"]
+  }
+]
+→ minor_findings: []
 → clarifications: []
 → score: 3
 
 Example 12 — Descriptor only:
 Resident: “Sigmoid diverticulitis.”
 Attending: “Sigmoid diverticulitis with trace adjacent fluid; no abscess.”
-→ major: []
-→ minor: []
-→ clarifications: ["Adds trace adjacent fluid; no abscess (descriptor: degree; descriptor: negative finding)"]
+→ major_findings: []
+→ minor_findings: []
+→ clarifications: [
+  {
+    "summary_text": "Adds trace adjacent fluid; no abscess (descriptor: degree; descriptor: negative finding)",
+    "resident_snippet": "Sigmoid diverticulitis.",
+    "attending_snippet": "Sigmoid diverticulitis with trace adjacent fluid; no abscess.",
+    "attending_highlights": ["trace adjacent fluid", "no abscess"],
+    "resident_highlights": []
+  }
+]
 → score: 0
 
 </examples>
@@ -583,6 +793,8 @@ def index():
     .chip.major{background:color-mix(in srgb,var(--chip-major) 18%,transparent);color:#ffc4cf;border-color:#5c2034}
     .chip.minor{background:color-mix(in srgb,var(--chip-minor) 18%,transparent);color:#fff2c4;border-color:#5c4a20}
     .chip.clar{background:color-mix(in srgb,var(--chip-clar) 18%,transparent);color:#c4f4ff;border-color:#20545c}
+
+    .key-change{color:var(--chip-major);font-weight:700}
 
     .toggle-chip{cursor:pointer;border-color:#2a3344;background:#101623;color:#c6d4f2;transition:background .2s ease,border-color .2s ease,color .2s ease}
     .toggle-chip[data-active="true"].chip-major{background:color-mix(in srgb,var(--chip-major) 22%,transparent);color:#ffc4cf;border-color:#5c2034}
@@ -1030,9 +1242,15 @@ Attending Report:
       const total = majors.length + minors.length + clar.length;
       const pctMajor = total ? Math.round((majors.length/total)*100) : 0;
 
-      const majorsList = majors.length ? `<ul class="mb-0">${majors.map(x=>`<li>${x}</li>`).join('')}</ul>` : '<div class="text-secondary small">None</div>';
-      const minorsList = minors.length ? `<ul class="mb-0">${minors.map(x=>`<li>${x}</li>`).join('')}</ul>` : '<div class="text-secondary small">None</div>';
-      const clarList = clar.length ? `<ul class="mb-0">${clar.map(x=>`<li>${x}</li>`).join('')}</ul>` : '<div class="text-secondary small">None</div>';
+      const majorsList = majors.length
+        ? `<ul class="mb-0">${majors.map(x => renderFindingItem(x, c.case_num, 'major')).join('')}</ul>`
+        : '<div class="text-secondary small">None</div>';
+      const minorsList = minors.length
+        ? `<ul class="mb-0">${minors.map(x => renderFindingItem(x, c.case_num, 'minor')).join('')}</ul>`
+        : '<div class="text-secondary small">None</div>';
+      const clarList = clar.length
+        ? `<ul class="mb-0">${clar.map(x => renderFindingItem(x, c.case_num, 'clar')).join('')}</ul>`
+        : '<div class="text-secondary small">None</div>';
 
       return `
         <div id="case${c.case_num}" class="case-card panel-2 p-3 mb-3" data-major-count="${majors.length}" data-minor-count="${minors.length}" data-clar-count="${clar.length}">
@@ -1510,6 +1728,71 @@ No pulmonary embolism.`;
       return str.replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[m]));
     }
     window.escapeHTML = escapeHTML;
+
+    function applyExplicitHighlights(text, highlightPhrases) {
+      if (!text) return '';
+      if (!Array.isArray(highlightPhrases) || !highlightPhrases.length) {
+        return escapeHTML(text);
+      }
+
+      let result = escapeHTML(text);
+
+      const sorted = [...highlightPhrases]
+        .filter(Boolean)
+        .map(p => p.trim())
+        .filter(p => p.length > 0)
+        .sort((a, b) => b.length - a.length);
+
+      for (const phrase of sorted) {
+        const pattern = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\$&');
+        const re = new RegExp(pattern, 'gi');
+
+        result = result.replace(re, (match) => {
+          if (match.includes('key-change')) return match;
+          return `<span class="key-change">${escapeHTML(match)}</span>`;
+        });
+      }
+
+      return result;
+    }
+
+    function renderFindingItem(finding, caseNum, severity) {
+      if (typeof finding === 'string') {
+        return `
+      <li
+        class="finding-item"
+        data-case-num="${caseNum}"
+        data-severity="${severity}"
+        data-mode="legacy"
+      >
+        ${escapeHTML(finding)}
+      </li>
+    `;
+      }
+
+      const text = finding.summary_text || finding.attending_snippet || '';
+      const highlights = Array.isArray(finding.attending_highlights)
+        ? finding.attending_highlights
+        : [];
+
+      const rendered = applyExplicitHighlights(text, highlights);
+
+      const resSnippet = finding.resident_snippet || '';
+      const attSnippet = finding.attending_snippet || '';
+
+      return `
+    <li
+      class="finding-item"
+      data-case-num="${caseNum}"
+      data-severity="${severity}"
+      data-mode="structured"
+      data-res="${escapeHTML(resSnippet)}"
+      data-att="${escapeHTML(attSnippet)}"
+    >
+      ${rendered}
+    </li>
+  `;
+    }
 
     // ---------- Keyboard shortcuts ----------
     function focusCase(i) {
