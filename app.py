@@ -1528,10 +1528,22 @@ No pulmonary embolism.`;
         return;
       }
       const key = e.key.toLowerCase();
+
+      if (key === 'tab') {
+        if (e.altKey && !e.ctrlKey && !e.metaKey) {
+          e.preventDefault(); focusCase(currentIndex-1);
+          return;
+        }
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault(); focusCase(currentIndex+1);
+          return;
+        }
+      }
+
       const hasModifier = e.ctrlKey || e.metaKey || e.altKey;
-      if (!hasModifier && key==='v') {
+      if (!hasModifier && key==='c') {
         e.preventDefault(); focusCase(currentIndex+1);
-      } else if (!hasModifier && key==='c') {
+      } else if (!hasModifier && key==='x') {
         e.preventDefault(); focusCase(currentIndex-1);
       } else if (['1','2','3','4'].includes(e.key)) {
         e.preventDefault(); switchTab(parseInt(e.key,10));
