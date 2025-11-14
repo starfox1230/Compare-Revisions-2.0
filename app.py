@@ -666,6 +666,8 @@ def index():
     .sort-btn .mode{font-weight:700;color:#b7d3ff}
 
     .case-card{scroll-margin-top:90px}
+    .case-card.selected{border-color:rgba(43,212,125,.6);box-shadow:0 0 0 2px rgba(43,212,125,.35)}
+    .case-card.single-hidden{display:none}
     .kbd{border:1px solid #3a4252;border-bottom-color:#2e3543;background:#1a1f2b;padding:.15rem .35rem;border-radius:6px;font-size:.8rem;color:var(--muted)}
     .toaster{position:fixed;right:18px;bottom:18px;z-index:50;background:#1c2432;border:1px solid #2a3547;color:#d7e3ff;padding:.65rem .8rem;border-radius:10px;display:none}
   </style>
@@ -780,6 +782,9 @@ Attending Report:
           <div class="d-flex flex-wrap gap-2 mb-2">
             <button class="side-btn btn-sm" id="expandAllBtn"><i class="bi bi-arrows-expand"></i> Expand</button>
             <button class="side-btn btn-sm" id="collapseAllBtn"><i class="bi bi-arrows-collapse"></i> Collapse</button>
+            <button class="side-btn btn-sm" type="button" id="singleViewToggle" aria-pressed="false">
+              <i class="bi bi-view-stacked"></i> Show One
+            </button>
           </div>
 
           <div id="aggregateBlock" class="panel-2 p-2 mb-2 d-none">
@@ -874,9 +879,13 @@ Attending Report:
     const aggMinor = document.getElementById('aggMinor');
     const aggClar = document.getElementById('aggClar');
     const aggBar = document.getElementById('aggBar');
+    const singleViewToggle = document.getElementById('singleViewToggle');
     const severityChips = document.querySelectorAll('.toggle-chip');
     const activeSeverities = new Set();
     let currentSearchTerm = '';
+    let selectedCaseId = null;
+    let showSingleMode = false;
+    let currentIndex = 0;
 
     const gridLayout = document.getElementById('gridLayout');
 
@@ -1105,6 +1114,59 @@ Attending Report:
       `;
     }
 
+    function updateSingleToggleButton() {
+      if (!singleViewToggle) return;
+      if (showSingleMode) {
+        singleViewToggle.innerHTML = '<i class="bi bi-collection me-1"></i> Show All';
+      } else {
+        singleViewToggle.innerHTML = '<i class="bi bi-view-stacked me-1"></i> Show One';
+      }
+      singleViewToggle.setAttribute('aria-pressed', showSingleMode ? 'true' : 'false');
+    }
+
+    function updateSelectedCardVisual() {
+      const targetId = selectedCaseId ? `case${selectedCaseId}` : null;
+      document.querySelectorAll('.case-card').forEach(card => {
+        const isSelected = targetId && card.id === targetId;
+        card.classList.toggle('selected', Boolean(isSelected));
+        card.classList.toggle('single-hidden', showSingleMode && !isSelected);
+      });
+    }
+
+    function setSelectedCard(card, { scroll = false } = {}) {
+      if (!card) return;
+      const cards = Array.from(document.querySelectorAll('.case-card'));
+      const idx = cards.indexOf(card);
+      if (idx === -1) return;
+
+      selectedCaseId = card.id.replace('case', '');
+      currentIndex = idx;
+      updateSelectedCardVisual();
+
+      if (scroll) {
+        card.scrollIntoView({ behavior: 'smooth', block: showSingleMode ? 'center' : 'start' });
+      }
+    }
+
+    function ensureSelectedCard() {
+      const cards = Array.from(document.querySelectorAll('.case-card'));
+      if (!cards.length) {
+        selectedCaseId = null;
+        currentIndex = 0;
+        updateSelectedCardVisual();
+        return;
+      }
+
+      const target = selectedCaseId ? cards.find(card => card.id === `case${selectedCaseId}`) : cards[0];
+      setSelectedCard(target || cards[0], { scroll: false });
+    }
+
+    function attachCaseCardListeners() {
+      document.querySelectorAll('.case-card').forEach(card => {
+        card.addEventListener('click', () => setSelectedCard(card));
+      });
+    }
+
     // ---------- Rendering ----------
     function renderAll(data) {
       updateAggregateTotals();
@@ -1113,6 +1175,8 @@ Attending Report:
         containerEl.classList.add('d-none');
         emptyStateEl.classList.remove('d-none');
         renderNav([]);
+        ensureSelectedCard();
+        updateSingleToggleButton();
         hideOverlay();
         return;
       }
@@ -1123,6 +1187,8 @@ Attending Report:
       if (!data || data.length === 0) {
         containerEl.innerHTML = '<div class="panel-2 p-3 mb-3 text-secondary">No cases match your current filters.</div>';
         renderNav([]);
+        ensureSelectedCard();
+        updateSingleToggleButton();
         endLoading();
         hideOverlay();
         return;
@@ -1131,6 +1197,9 @@ Attending Report:
       midLoading();
       containerEl.innerHTML = data.map(caseCardHTML).join('');
       renderNav(data);
+      attachCaseCardListeners();
+      ensureSelectedCard();
+      updateSingleToggleButton();
       endLoading();
       hideOverlay();
     }
@@ -1209,6 +1278,7 @@ Attending Report:
 
     // ---------- Event wiring ----------
     document.addEventListener('DOMContentLoaded', () => {
+      updateSingleToggleButton();
       rerender();
       applySortVisual('number'); // initialize sort visual
       setCollapsed(false);       // start expanded
@@ -1277,6 +1347,24 @@ No pulmonary embolism.`;
     });
     document.getElementById('collapseAllBtn').addEventListener('click', () => {
       document.querySelectorAll('[id^="body"]').forEach(el => el.style.display = 'none');
+    });
+
+    if (singleViewToggle) {
+      singleViewToggle.addEventListener('click', () => {
+        showSingleMode = !showSingleMode;
+        ensureSelectedCard();
+        updateSingleToggleButton();
+      });
+    }
+
+    navEl.addEventListener('click', (evt) => {
+      const link = evt.target.closest('a[href^="#case"]');
+      if (!link) return;
+      const id = link.getAttribute('href').replace('#case', '');
+      const card = document.getElementById(`case${id}`);
+      if (card) {
+        setSelectedCard(card, { scroll: true });
+      }
     });
 
     document.getElementById('downloadAllBtn').addEventListener('click', () => {
@@ -1392,14 +1480,14 @@ No pulmonary embolism.`;
     window.escapeHTML = escapeHTML;
 
     // ---------- Keyboard shortcuts ----------
-    let currentIndex = 0;
     function focusCase(i) {
-      const list = document.querySelectorAll('.case-card');
-      if (!list.length) return;
-      currentIndex = Math.max(0, Math.min(i, list.length-1));
-      list[currentIndex].scrollIntoView({behavior:'smooth', block:'start'});
-      list[currentIndex].classList.add('ring');
-      setTimeout(()=> list[currentIndex].classList.remove('ring'), 600);
+      const cards = Array.from(document.querySelectorAll('.case-card'));
+      if (!cards.length) return;
+      const bounded = Math.max(0, Math.min(i, cards.length - 1));
+      const card = cards[bounded];
+      setSelectedCard(card, { scroll: true });
+      card.classList.add('ring');
+      setTimeout(()=> card.classList.remove('ring'), 600);
     }
     function switchTab(n) {
       const list = document.querySelectorAll('.case-card');
