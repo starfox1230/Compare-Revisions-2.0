@@ -801,7 +801,8 @@ Attending Report:
           <div id="caseNav" class="case-nav small"></div>
 
           <div class="mt-3 small text-secondary">
-            <div><span class="kbd">C</span>/<span class="kbd">V</span> prev/next</div>
+            <div><span class="kbd">X</span> prev • <span class="kbd">C</span> next</div>
+            <div><span class="kbd">Shift+Tab</span> prev • <span class="kbd">Tab</span> next</div>
             <div><span class="kbd">1–4</span> tabs</div>
             <div><span class="kbd">F</span> focus search</div>
             <div><span class="kbd">S</span> cycle sort</div>
@@ -816,7 +817,7 @@ Attending Report:
           <div id="emptyState" class="text-center text-secondary p-5">
             <i class="bi bi-arrow-up-right-square text-primary fs-1 d-block mb-2"></i>
             <div class="mb-1">Paste reports above and click <strong>Compare &amp; Summarize</strong>.</div>
-            <div class="small">Keyboard: C/V to move, 1–4 to switch tabs.</div>
+            <div class="small">Keyboard: X/C or Tab/Shift+Tab to move, 1–4 to switch tabs.</div>
           </div>
           <div id="caseContainer" class="d-none"></div>
         </div>
@@ -886,6 +887,7 @@ Attending Report:
     let selectedCaseId = null;
     let showSingleMode = false;
     let currentIndex = 0;
+    let lastActiveTabKey = 'sum';
 
     const gridLayout = document.getElementById('gridLayout');
 
@@ -1059,16 +1061,16 @@ Attending Report:
           <div id="body${c.case_num}">
             <ul class="nav nav-tabs tabs mt-2" role="tablist">
               <li class="nav-item" role="presentation">
-                <button class="nav-link active" id="tab-sum-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-sum-${c.case_num}" type="button" role="tab">Summary</button>
+                <button class="nav-link active" id="tab-sum-${c.case_num}" data-tab-key="sum" data-bs-toggle="tab" data-bs-target="#tab-pane-sum-${c.case_num}" type="button" role="tab">Summary</button>
               </li>
               <li class="nav-item" role="presentation">
-                <button class="nav-link" id="tab-combo-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-combo-${c.case_num}" type="button" role="tab">Combined Diff</button>
+                <button class="nav-link" id="tab-combo-${c.case_num}" data-tab-key="combo" data-bs-toggle="tab" data-bs-target="#tab-pane-combo-${c.case_num}" type="button" role="tab">Combined Diff</button>
               </li>
               <li class="nav-item" role="presentation">
-                <button class="nav-link" id="tab-res-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-res-${c.case_num}" type="button" role="tab">Resident</button>
+                <button class="nav-link" id="tab-res-${c.case_num}" data-tab-key="res" data-bs-toggle="tab" data-bs-target="#tab-pane-res-${c.case_num}" type="button" role="tab">Resident</button>
               </li>
               <li class="nav-item" role="presentation">
-                <button class="nav-link" id="tab-att-${c.case_num}" data-bs-toggle="tab" data-bs-target="#tab-pane-att-${c.case_num}" type="button" role="tab">Attending</button>
+                <button class="nav-link" id="tab-att-${c.case_num}" data-tab-key="att" data-bs-toggle="tab" data-bs-target="#tab-pane-att-${c.case_num}" type="button" role="tab">Attending</button>
               </li>
             </ul>
 
@@ -1142,6 +1144,7 @@ Attending Report:
       selectedCaseId = card.id.replace('case', '');
       currentIndex = idx;
       updateSelectedCardVisual();
+      activateTabForCase(selectedCaseId, lastActiveTabKey);
 
       if (scroll) {
         card.scrollIntoView({ behavior: 'smooth', block: showSingleMode ? 'center' : 'start' });
@@ -1277,6 +1280,13 @@ Attending Report:
     }
 
     // ---------- Event wiring ----------
+    document.addEventListener('shown.bs.tab', (event) => {
+      const target = event.target;
+      if (target && target.dataset && target.dataset.tabKey) {
+        lastActiveTabKey = target.dataset.tabKey;
+      }
+    });
+
     document.addEventListener('DOMContentLoaded', () => {
       updateSingleToggleButton();
       rerender();
@@ -1518,7 +1528,20 @@ No pulmonary embolism.`;
       const tabIds = ['sum','combo','res','att'];
       const which = tabIds[n-1] || 'sum';
       const btn = document.getElementById(`tab-${which}-${id}`);
-      if (btn) btn.click();
+      if (btn) {
+        lastActiveTabKey = which;
+        btn.click();
+      }
+    }
+
+    function activateTabForCase(caseId, tabKey) {
+      if (!caseId || !tabKey) return;
+      const btn = document.getElementById(`tab-${tabKey}-${caseId}`);
+      if (!btn) return;
+      lastActiveTabKey = tabKey;
+      if (!btn.classList.contains('active')) {
+        btn.click();
+      }
     }
 
     let gPressedOnce = false;
@@ -1530,12 +1553,13 @@ No pulmonary embolism.`;
       const key = e.key.toLowerCase();
 
       if (key === 'tab') {
-        if (e.altKey && !e.ctrlKey && !e.metaKey) {
-          e.preventDefault(); focusCase(currentIndex-1);
-          return;
-        }
-        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-          e.preventDefault(); focusCase(currentIndex+1);
+        if (!e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          if (e.shiftKey) {
+            focusCase(currentIndex-1);
+          } else {
+            focusCase(currentIndex+1);
+          }
           return;
         }
       }
