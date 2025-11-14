@@ -1,5 +1,5 @@
 from flask import Flask, render_template_string, request
-import difflib, re, os, json, logging
+import difflib, re, os, json, logging, html
 import openai as _openai_pkg
 from openai import OpenAI
 from openai import (
@@ -314,7 +314,14 @@ Attending: “Sigmoid diverticulitis with trace adjacent fluid; no abscess.”
 
 # --------------------------- Helpers ---------------------------------
 def normalize_text(text):
-    return "\n".join([line.strip() for line in text.splitlines() if line.strip()])
+    if not text:
+        return ""
+
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    lines = [line.rstrip() for line in text.split('\n')]
+    # Preserve intentional blank lines so paragraph boundaries remain intact
+    normalized = "\n".join(lines)
+    return normalized.strip("\n")
 
 def remove_attending_review_line(text):
     excluded_lines = [
@@ -328,7 +335,7 @@ def calculate_change_percentage(resident_text, attending_text):
     return round((1 - matcher.ratio()) * 100, 2)
 
 def split_into_paragraphs(text):
-    paragraphs = re.split(r'\n{2,}|\n(?=\w)', text)
+    paragraphs = re.split(r'\n\s*\n+', text)
     return [para.strip() for para in paragraphs if para.strip()]
 
 def create_diff_by_section(resident_text, attending_text):
@@ -342,35 +349,52 @@ def create_diff_by_section(resident_text, attending_text):
     for opcode, a1, a2, b1, b2 in matcher.get_opcodes():
         if opcode == 'equal':
             for paragraph in resident_paragraphs[a1:a2]:
-                diff_html += f'<div class="para equal">{paragraph}</div>'
+                diff_html += f'<div class="para equal">{html.escape(paragraph)}</div>'
         elif opcode == 'insert':
             for paragraph in attending_paragraphs[b1:b2]:
-                diff_html += f'<div class="para ins">[Inserted: {paragraph}]</div>'
+                diff_html += f'<div class="para ins">{html.escape(paragraph)}</div>'
         elif opcode == 'delete':
             for paragraph in resident_paragraphs[a1:a2]:
-                diff_html += f'<div class="para del">[Deleted: {paragraph}]</div>'
+                diff_html += f'<div class="para del">{html.escape(paragraph)}</div>'
         elif opcode == 'replace':
             res_paragraphs = resident_paragraphs[a1:a2]
             att_paragraphs = attending_paragraphs[b1:b2]
-            for res_paragraph, att_paragraph in zip(res_paragraphs, att_paragraphs):
-                word_matcher = difflib.SequenceMatcher(None, res_paragraph.split(), att_paragraph.split())
-                seg = []
-                for word_opcode, w_a1, w_a2, w_b1, w_b2 in word_matcher.get_opcodes():
-                    if word_opcode == 'equal':
-                        seg.append(" ".join(res_paragraph.split()[w_a1:w_a2]))
-                    elif word_opcode == 'replace':
-                        seg.append(
-                            '<span class="word del">' +
-                            " ".join(res_paragraph.split()[w_a1:w_a2]) +
-                            '</span> <span class="word ins">' +
-                            " ".join(att_paragraph.split()[w_b1:w_b2]) +
-                            '</span>'
-                        )
-                    elif word_opcode == 'delete':
-                        seg.append('<span class="word del">' + " ".join(res_paragraph.split()[w_a1:w_a2]) + '</span>')
-                    elif word_opcode == 'insert':
-                        seg.append('<span class="word ins">' + " ".join(att_paragraph.split()[w_b1:w_b2]) + '</span>')
-                diff_html += f'<div class="para rep">{" ".join(seg)}</div>'
+            max_len = max(len(res_paragraphs), len(att_paragraphs))
+
+            for idx in range(max_len):
+                res_paragraph = res_paragraphs[idx] if idx < len(res_paragraphs) else None
+                att_paragraph = att_paragraphs[idx] if idx < len(att_paragraphs) else None
+
+                if res_paragraph and att_paragraph:
+                    similarity = difflib.SequenceMatcher(None, res_paragraph, att_paragraph).ratio()
+                    if similarity < 0.4:
+                        diff_html += f'<div class="para del">{html.escape(res_paragraph)}</div>'
+                        diff_html += f'<div class="para ins">{html.escape(att_paragraph)}</div>'
+                        continue
+
+                    res_words = res_paragraph.split()
+                    att_words = att_paragraph.split()
+                    word_matcher = difflib.SequenceMatcher(None, res_words, att_words)
+                    seg = []
+                    for word_opcode, w_a1, w_a2, w_b1, w_b2 in word_matcher.get_opcodes():
+                        if word_opcode == 'equal':
+                            seg.append(html.escape(" ".join(res_words[w_a1:w_a2])))
+                        elif word_opcode == 'replace':
+                            deleted = html.escape(" ".join(res_words[w_a1:w_a2]))
+                            inserted = html.escape(" ".join(att_words[w_b1:w_b2]))
+                            seg.append(
+                                f'<span class="word del">{deleted}</span> '
+                                f'<span class="word ins">{inserted}</span>'
+                            )
+                        elif word_opcode == 'delete':
+                            seg.append(f'<span class="word del">{html.escape(" ".join(res_words[w_a1:w_a2]))}</span>')
+                        elif word_opcode == 'insert':
+                            seg.append(f'<span class="word ins">{html.escape(" ".join(att_words[w_b1:w_b2]))}</span>')
+                    diff_html += f'<div class="para rep">{" ".join(seg)}</div>'
+                elif res_paragraph:
+                    diff_html += f'<div class="para del">{html.escape(res_paragraph)}</div>'
+                elif att_paragraph:
+                    diff_html += f'<div class="para ins">{html.escape(att_paragraph)}</div>'
     return diff_html
 
 # ------------------------- OpenAI call --------------------------------
