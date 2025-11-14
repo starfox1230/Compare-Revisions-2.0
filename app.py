@@ -579,10 +579,21 @@ def index():
     .form-control,textarea,input{background:#0f131b!important;color:var(--text)!important;border:1px solid var(--border)!important}
     .form-control:focus{box-shadow:0 0 0 .25rem rgba(77,163,255,.15)}
     .badge-score{background:#1e2a3d;color:#b7d3ff;border:1px solid #2e405e}
-    .chip{border-radius:999px;padding:.2rem .55rem;font-weight:600;border:1px solid #334155}
+    .chip{border-radius:999px;padding:.2rem .55rem;font-weight:600;border:1px solid #334155;display:inline-flex;align-items:center;gap:.35rem}
     .chip.major{background:color-mix(in srgb,var(--chip-major) 18%,transparent);color:#ffc4cf;border-color:#5c2034}
     .chip.minor{background:color-mix(in srgb,var(--chip-minor) 18%,transparent);color:#fff2c4;border-color:#5c4a20}
     .chip.clar{background:color-mix(in srgb,var(--chip-clar) 18%,transparent);color:#c4f4ff;border-color:#20545c}
+
+    .toggle-chip{cursor:pointer;border-color:#2a3344;background:#101623;color:#c6d4f2;transition:background .2s ease,border-color .2s ease,color .2s ease}
+    .toggle-chip[data-active="true"].chip-major{background:color-mix(in srgb,var(--chip-major) 22%,transparent);color:#ffc4cf;border-color:#5c2034}
+    .toggle-chip[data-active="true"].chip-minor{background:color-mix(in srgb,var(--chip-minor) 22%,transparent);color:#fff2c4;border-color:#5c4a20}
+    .toggle-chip[data-active="true"].chip-clar{background:color-mix(in srgb,var(--chip-clar) 22%,transparent);color:#c4f4ff;border-color:#20545c}
+    .toggle-chip:focus-visible{outline:2px solid rgba(77,163,255,.45);outline-offset:2px}
+
+    .severity-block{transition:background .2s ease,border-color .2s ease}
+    .severity-block.highlight-major{background:color-mix(in srgb,var(--chip-major) 16%,transparent);border-color:color-mix(in srgb,var(--chip-major) 35%,#1a2233)}
+    .severity-block.highlight-minor{background:color-mix(in srgb,var(--chip-minor) 16%,transparent);border-color:color-mix(in srgb,var(--chip-minor) 35%,#1a2233)}
+    .severity-block.highlight-clar{background:color-mix(in srgb,var(--chip-clar) 16%,transparent);border-color:color-mix(in srgb,var(--chip-clar) 35%,#1a2233)}
     .progress{background:#1b2330;height:8px;border-radius:10px}
     .progress-bar{background:linear-gradient(90deg,var(--primary),#7ab8ff)}
     .para{padding:.45rem .6rem;border-left:3px solid transparent;border-radius:8px;margin-bottom:.5rem;background:#0f131b}
@@ -767,17 +778,15 @@ Attending Report:
           <input id="searchInput" class="form-control form-control-sm mb-2" placeholder="Search text or Case # (F)"/>
 
           <div class="d-flex flex-wrap gap-2 mb-2">
-            <button class="side-btn btn-sm" id="filterMajorsBtn"><i class="bi bi-exclamation-octagon"></i> Majors</button>
-            <button class="side-btn btn-sm" id="filterErrorsBtn"><i class="bi bi-bug"></i> Errors</button>
             <button class="side-btn btn-sm" id="expandAllBtn"><i class="bi bi-arrows-expand"></i> Expand</button>
             <button class="side-btn btn-sm" id="collapseAllBtn"><i class="bi bi-arrows-collapse"></i> Collapse</button>
           </div>
 
           <div id="aggregateBlock" class="panel-2 p-2 mb-2 d-none">
             <div class="d-flex align-items-center gap-2 mb-1">
-              <span class="chip major">Major <span id="aggMajor">0</span></span>
-              <span class="chip minor">Minor <span id="aggMinor">0</span></span>
-              <span class="chip clar">Clar <span id="aggClar">0</span></span>
+              <span class="chip toggle-chip chip-major" role="button" tabindex="0" aria-pressed="false" data-severity="major" data-active="false">Major <span id="aggMajor">0</span></span>
+              <span class="chip toggle-chip chip-minor" role="button" tabindex="0" aria-pressed="false" data-severity="minor" data-active="false">Minor <span id="aggMinor">0</span></span>
+              <span class="chip toggle-chip chip-clar" role="button" tabindex="0" aria-pressed="false" data-severity="clar" data-active="false">Clar <span id="aggClar">0</span></span>
             </div>
             <div class="progress" title="Percent major across all items">
               <div class="progress-bar" id="aggBar" style="width:0%"></div>
@@ -814,10 +823,12 @@ Attending Report:
 
   <script>
     let caseData = {{ case_data | tojson }};
+    if (!Array.isArray(caseData)) caseData = [];
     const navEl = document.getElementById('caseNav');
     const containerEl = document.getElementById('caseContainer');
     const emptyStateEl = document.getElementById('emptyState');
     const caseCountBadge = document.getElementById('caseCountBadge');
+    const searchInput = document.getElementById('searchInput');
     const toaster = document.getElementById('toaster');
     const loadingBar = document.getElementById('loadingBar');
     const overlayEl = document.getElementById('loading-overlay');
@@ -863,6 +874,9 @@ Attending Report:
     const aggMinor = document.getElementById('aggMinor');
     const aggClar = document.getElementById('aggClar');
     const aggBar = document.getElementById('aggBar');
+    const severityChips = document.querySelectorAll('.toggle-chip');
+    const activeSeverities = new Set();
+    let currentSearchTerm = '';
 
     const gridLayout = document.getElementById('gridLayout');
 
@@ -895,6 +909,40 @@ Attending Report:
       setTimeout(()=>{ toaster.style.display = 'none'; }, ms);
     }
 
+    function updateSeverityChipStyles() {
+      severityChips.forEach(chip => {
+        const sev = chip.dataset.severity;
+        const active = activeSeverities.has(sev);
+        chip.setAttribute('data-active', active ? 'true' : 'false');
+        chip.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+    }
+
+    function updateAggregateTotals() {
+      if (!caseData || !caseData.length) {
+        aggMajor.textContent = '0';
+        aggMinor.textContent = '0';
+        aggClar.textContent = '0';
+        aggBar.style.width = '0%';
+        aggregateBlock.classList.add('d-none');
+        return;
+      }
+
+      let M = 0, m = 0, c = 0;
+      caseData.forEach(d => {
+        if (!d.summary) return;
+        M += (d.summary.major_findings || []).length;
+        m += (d.summary.minor_findings || []).length;
+        c += (d.summary.clarifications || []).length;
+      });
+      const total = M + m + c;
+      aggMajor.textContent = M;
+      aggMinor.textContent = m;
+      aggClar.textContent = c;
+      aggBar.style.width = total ? Math.min(100, Math.round((M / Math.max(1, total)) * 100)) + '%' : '0%';
+      aggregateBlock.classList.remove('d-none');
+    }
+
     // ---------- Sidebar collapse/expand ----------
     function setCollapsed(collapsed){
       gridLayout.classList.toggle('collapsed', collapsed);
@@ -920,7 +968,7 @@ Attending Report:
       const next = sortModes[(idx+1)%sortModes.length];
       sortBy(next);
       applySortVisual(next);
-      renderAll(caseData);
+      rerender();
     }
 
     sortBtn.addEventListener('click', () => {
@@ -976,7 +1024,7 @@ Attending Report:
       const clarList = clar.length ? `<ul class="mb-0">${clar.map(x=>`<li>${x}</li>`).join('')}</ul>` : '<div class="text-secondary small">None</div>';
 
       return `
-        <div id="case${c.case_num}" class="case-card panel-2 p-3 mb-3">
+        <div id="case${c.case_num}" class="case-card panel-2 p-3 mb-3" data-major-count="${majors.length}" data-minor-count="${minors.length}" data-clar-count="${clar.length}">
           <div class="d-flex align-items-center gap-2 flex-wrap">
             <strong class="me-2">Case ${c.case_num}</strong>
             <span class="badge badge-score">Score ${s.score ?? 0}</span>
@@ -1019,19 +1067,19 @@ Attending Report:
               <div class="tab-pane fade show active" id="tab-pane-sum-${c.case_num}" role="tabpanel" tabindex="0">
                 <div class="row g-2">
                   <div class="col-12 col-lg-4">
-                    <div class="panel p-2 h-100">
+                    <div class="panel p-2 h-100 severity-block severity-major">
                       <div class="d-flex align-items-center gap-2 mb-2"><i class="bi bi-exclamation-octagon text-danger"></i><strong>Major</strong></div>
                       ${majorsList}
                     </div>
                   </div>
                   <div class="col-12 col-lg-4">
-                    <div class="panel p-2 h-100">
+                    <div class="panel p-2 h-100 severity-block severity-minor">
                       <div class="d-flex align-items-center gap-2 mb-2"><i class="bi bi-info-circle text-warning"></i><strong>Minor</strong></div>
                       ${minorsList}
                     </div>
                   </div>
                   <div class="col-12 col-lg-4">
-                    <div class="panel p-2 h-100">
+                    <div class="panel p-2 h-100 severity-block severity-clar">
                       <div class="d-flex align-items-center gap-2 mb-2"><i class="bi bi-pencil-square text-info"></i><strong>Clarifications</strong></div>
                       ${clarList}
                     </div>
@@ -1059,37 +1107,81 @@ Attending Report:
 
     // ---------- Rendering ----------
     function renderAll(data) {
-      if (!data || data.length === 0) {
+      updateAggregateTotals();
+
+      if (!caseData || !caseData.length) {
         containerEl.classList.add('d-none');
         emptyStateEl.classList.remove('d-none');
         renderNav([]);
-        aggregateBlock.classList.add('d-none');
         hideOverlay();
         return;
       }
-      midLoading();
+
       emptyStateEl.classList.add('d-none');
       containerEl.classList.remove('d-none');
 
-      // Aggregate
-      let M=0, m=0, c=0;
-      data.forEach(d => {
-        if (!d.summary) return;
-        M += (d.summary.major_findings||[]).length;
-        m += (d.summary.minor_findings||[]).length;
-        c += (d.summary.clarifications||[]).length;
-      });
-      const total = M+m+c;
-      aggMajor.textContent = M;
-      aggMinor.textContent = m;
-      aggClar.textContent = c;
-      aggBar.style.width = total ? Math.min(100, Math.round((M/Math.max(1,total))*100)) + '%' : '0%';
-      aggregateBlock.classList.remove('d-none');
+      if (!data || data.length === 0) {
+        containerEl.innerHTML = '<div class="panel-2 p-3 mb-3 text-secondary">No cases match your current filters.</div>';
+        renderNav([]);
+        endLoading();
+        hideOverlay();
+        return;
+      }
 
+      midLoading();
       containerEl.innerHTML = data.map(caseCardHTML).join('');
       renderNav(data);
       endLoading();
       hideOverlay();
+    }
+
+    function applySeverityHighlights() {
+      const highlightMajor = activeSeverities.has('major');
+      const highlightMinor = activeSeverities.has('minor');
+      const highlightClar = activeSeverities.has('clar');
+
+      document.querySelectorAll('.case-card').forEach(card => {
+        const majorCount = parseInt(card.getAttribute('data-major-count') || '0', 10);
+        const minorCount = parseInt(card.getAttribute('data-minor-count') || '0', 10);
+        const clarCount = parseInt(card.getAttribute('data-clar-count') || '0', 10);
+
+        const majorBlock = card.querySelector('.severity-block.severity-major');
+        const minorBlock = card.querySelector('.severity-block.severity-minor');
+        const clarBlock = card.querySelector('.severity-block.severity-clar');
+
+        if (majorBlock) majorBlock.classList.toggle('highlight-major', highlightMajor && majorCount > 0);
+        if (minorBlock) minorBlock.classList.toggle('highlight-minor', highlightMinor && minorCount > 0);
+        if (clarBlock) clarBlock.classList.toggle('highlight-clar', highlightClar && clarCount > 0);
+      });
+    }
+
+    function computeVisibleData() {
+      let list = [...caseData];
+      if (currentSearchTerm) {
+        list = searchFilter(list, currentSearchTerm);
+      }
+      if (activeSeverities.size > 0) {
+        list = list.filter(c => {
+          if (!c.summary) return false;
+          const s = c.summary;
+          const hasMajor = (s.major_findings || []).length > 0;
+          const hasMinor = (s.minor_findings || []).length > 0;
+          const hasClar = (s.clarifications || []).length > 0;
+          return (
+            (activeSeverities.has('major') && hasMajor) ||
+            (activeSeverities.has('minor') && hasMinor) ||
+            (activeSeverities.has('clar') && hasClar)
+          );
+        });
+      }
+      return list;
+    }
+
+    function rerender() {
+      const visible = computeVisibleData();
+      renderAll(visible);
+      updateSeverityChipStyles();
+      applySeverityHighlights();
     }
 
     // ---------- Sorting / Filtering / Search ----------
@@ -1101,12 +1193,6 @@ Attending Report:
       } else if (mode === 'score') {
         caseData.sort((a,b)=> ((b.summary?.score)||0)-((a.summary?.score)||0));
       }
-    }
-    function filterMajorsOnly(list) {
-      return list.filter(x => (x.summary?.major_findings?.length||0) > 0);
-    }
-    function filterErrorsOnly(list) {
-      return list.filter(x => !x.summary);
     }
     function searchFilter(list, q) {
       if (!q) return list;
@@ -1123,9 +1209,7 @@ Attending Report:
 
     // ---------- Event wiring ----------
     document.addEventListener('DOMContentLoaded', () => {
-      if (caseData && caseData.length) {
-        renderAll(caseData);
-      }
+      rerender();
       applySortVisual('number'); // initialize sort visual
       setCollapsed(false);       // start expanded
     });
@@ -1139,7 +1223,10 @@ Attending Report:
       document.getElementById('report_text').value = '';
       document.getElementById('custom_prompt').value = '';
       caseData = [];
-      renderAll(caseData);
+      currentSearchTerm = '';
+      searchInput.value = '';
+      activeSeverities.clear();
+      rerender();
     });
 
     document.getElementById('demoBtn').addEventListener('click', () => {
@@ -1160,23 +1247,29 @@ No pulmonary embolism.`;
       toast('Demo loaded. Click Compare & Summarize.');
     });
 
-    const searchInput = document.getElementById('searchInput');
     searchInput.addEventListener('input', () => {
-      let list = [...caseData];
-      list = searchFilter(list, searchInput.value);
-      renderAll(list);
+      currentSearchTerm = searchInput.value;
+      rerender();
     });
 
-    document.getElementById('filterMajorsBtn').addEventListener('click', () => {
-      const filtered = filterMajorsOnly(caseData);
-      renderAll(filtered);
-      toast('Showing cases with MAJOR findings');
-    });
+    function toggleSeverityFilter(sev) {
+      if (!sev) return;
+      if (activeSeverities.has(sev)) {
+        activeSeverities.delete(sev);
+      } else {
+        activeSeverities.add(sev);
+      }
+      rerender();
+    }
 
-    document.getElementById('filterErrorsBtn').addEventListener('click', () => {
-      const filtered = filterErrorsOnly(caseData);
-      renderAll(filtered);
-      toast('Showing error cases only');
+    severityChips.forEach(chip => {
+      chip.addEventListener('click', () => toggleSeverityFilter(chip.dataset.severity));
+      chip.addEventListener('keydown', (evt) => {
+        if (evt.key === 'Enter' || evt.key === ' ') {
+          evt.preventDefault();
+          toggleSeverityFilter(chip.dataset.severity);
+        }
+      });
     });
 
     document.getElementById('expandAllBtn').addEventListener('click', () => {
@@ -1261,7 +1354,10 @@ No pulmonary embolism.`;
         caseData = restored;
         sortBy('number');
         applySortVisual('number');
-        renderAll(caseData);
+        currentSearchTerm = '';
+        searchInput.value = '';
+        activeSeverities.clear();
+        rerender();
         toast('Upload complete');
       } catch (err) {
         console.error(err);
@@ -1321,19 +1417,21 @@ No pulmonary embolism.`;
         if (e.key.toLowerCase()==='escape') document.activeElement.blur();
         return;
       }
-      if (e.key==='v' || e.key==='V') {
+      const key = e.key.toLowerCase();
+      const hasModifier = e.ctrlKey || e.metaKey || e.altKey;
+      if (!hasModifier && key==='v') {
         e.preventDefault(); focusCase(currentIndex+1);
-      } else if (e.key==='c' || e.key==='C') {
+      } else if (!hasModifier && key==='c') {
         e.preventDefault(); focusCase(currentIndex-1);
       } else if (['1','2','3','4'].includes(e.key)) {
         e.preventDefault(); switchTab(parseInt(e.key,10));
-      } else if (e.key.toLowerCase()==='f') {
+      } else if (!hasModifier && key==='f') {
         e.preventDefault(); document.getElementById('searchInput').focus();
-      } else if (e.key.toLowerCase()==='s') {
+      } else if (!hasModifier && key==='s') {
         e.preventDefault();
         // trigger whichever sort control is visible
         if (gridLayout.classList.contains('collapsed')) sortBtnRail.click(); else sortBtn.click();
-      } else if (e.key.toLowerCase()==='g') {
+      } else if (!hasModifier && key==='g') {
         if (gPressedOnce) {
           window.scrollTo({top:0, behavior:'smooth'}); gPressedOnce=false;
         } else {
