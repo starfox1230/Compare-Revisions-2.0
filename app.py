@@ -1368,11 +1368,33 @@ No pulmonary embolism.`;
     });
 
     document.getElementById('downloadAllBtn').addEventListener('click', () => {
-      const summaries = caseData.map(c => ({ case_number: c.case_num, summary: c.summary, error: c.summary_error || null }));
-      const blob = new Blob([JSON.stringify(summaries, null, 2)], {type: 'application/json'});
+      if (!caseData || caseData.length === 0) {
+        toast('Nothing to download yet', 2000);
+        return;
+      }
+
+      const promptField = document.getElementById('custom_prompt');
+      const exportPayload = {
+        version: 'compare-revisions.v1',
+        exported_at: new Date().toISOString(),
+        custom_prompt: promptField ? promptField.value : null,
+        cases: caseData.map(c => ({
+          case_num: c.case_num,
+          case_number: c.case_num,
+          resident_report: c.resident_report,
+          attending_report: c.attending_report,
+          percentage_change: c.percentage_change,
+          diff: c.diff,
+          combined_diff_html: c.diff,
+          summary: c.summary,
+          summary_error: c.summary_error ?? null
+        }))
+      };
+
+      const blob = new Blob([JSON.stringify(exportPayload, null, 2)], {type: 'application/json'});
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = 'summaries.json'; a.click();
+      a.href = url; a.download = 'compare-revisions-session.json'; a.click();
       URL.revokeObjectURL(url);
     });
 
@@ -1412,7 +1434,7 @@ No pulmonary embolism.`;
             resident_report: c.resident_report || '',
             attending_report: c.attending_report || '',
             percentage_change: typeof c.percentage_change === 'number' ? c.percentage_change : 0,
-            diff: c.diff || '',
+            diff: c.diff || c.combined_diff_html || '',
             summary: c.summary || null,
             summary_error: c.summary_error || null
           }));
@@ -1506,10 +1528,22 @@ No pulmonary embolism.`;
         return;
       }
       const key = e.key.toLowerCase();
+
+      if (key === 'tab') {
+        if (e.altKey && !e.ctrlKey && !e.metaKey) {
+          e.preventDefault(); focusCase(currentIndex-1);
+          return;
+        }
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault(); focusCase(currentIndex+1);
+          return;
+        }
+      }
+
       const hasModifier = e.ctrlKey || e.metaKey || e.altKey;
-      if (!hasModifier && key==='v') {
+      if (!hasModifier && key==='c') {
         e.preventDefault(); focusCase(currentIndex+1);
-      } else if (!hasModifier && key==='c') {
+      } else if (!hasModifier && key==='x') {
         e.preventDefault(); focusCase(currentIndex-1);
       } else if (['1','2','3','4'].includes(e.key)) {
         e.preventDefault(); switchTab(parseInt(e.key,10));
