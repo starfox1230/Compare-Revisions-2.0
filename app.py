@@ -151,8 +151,12 @@ For each item you output in major_findings and minor_findings, you must also out
 
 Rules:
 - The key phrase should be the minimal but clinically meaningful phrase that encodes the change, e.g. "active extravasation", "right pneumothorax", "no pulmonary embolism".
+- The key phrase MUST appear verbatim as a contiguous substring inside the corresponding major_findings / minor_findings string so the frontend can highlight it reliably.
+- Avoid paraphrasing. Reuse the exact wording from the item string whenever possible.
+- If your ideal minimal phrase is not already present in the item string, slightly adjust the item string so that it contains that phrase exactly.
+- Do NOT add extra punctuation or quotes in major_key_phrases / minor_key_phrases. Use simple plain text phrases (e.g., active extravasation).
 - Do NOT change how you phrase the full strings in major_findings or minor_findings compared with what you would otherwise output. The key phrase is an extra field, not a replacement.
-- If there is no obvious minimal phrase, choose the shortest phrase that still clearly represents the change.
+- If there is no obvious minimal phrase, choose the shortest phrase that still clearly represents the change, and ensure it appears exactly in the item string.
 </key_change_phrases>
 
 <certainty_aware_corrections>
@@ -344,6 +348,26 @@ Example tool call payload:
   "minor_key_phrases": []
 }
 
+In the following example, notice that each key phrase is copied verbatim as a literal substring from the matching summary string so it can be highlighted without paraphrasing.
+{
+  "case_number": "5",
+  "major_findings": [
+    "Small right apical pneumothorax (perceptual; new critical finding)"
+  ],
+  "minor_findings": [
+    "Mild bibasilar atelectasis (perceptual)"
+  ],
+  "clarifications": [],
+  "score": 4,
+  "major_key_phrases": [
+    "right apical pneumothorax"
+  ],
+  "minor_key_phrases": [
+    "bibasilar atelectasis"
+  ]
+}
+This literal-substring requirement applies to every item you produce.
+
 Example 12 — Descriptor only:
 Resident: “Sigmoid diverticulitis.”
 Attending: “Sigmoid diverticulitis with trace adjacent fluid; no abscess.”
@@ -467,6 +491,21 @@ def get_summary(case_text, custom_prompt, case_number):
 
                 major_kp = parsed_json.get("major_key_phrases")
                 minor_kp = parsed_json.get("minor_key_phrases")
+
+                mismatch = (
+                    not isinstance(major_kp, list) or len(major_kp) != len(majors) or
+                    not isinstance(minor_kp, list) or len(minor_kp) != len(minors)
+                )
+
+                if mismatch:
+                    logger.warning(
+                        "Key phrase length mismatch for case %s (majors=%s, major_kp=%s, minors=%s, minor_kp=%s)",
+                        case_number,
+                        len(majors),
+                        len(major_kp) if isinstance(major_kp, list) else "None",
+                        len(minors),
+                        len(minor_kp) if isinstance(minor_kp, list) else "None",
+                    )
 
                 # If the model did not supply them correctly, create placeholders.
                 if not isinstance(major_kp, list) or len(major_kp) != len(majors):
