@@ -46,7 +46,15 @@ RADIOLOGY_SUMMARY_TOOL = [
                 "major_key_phrases": {"type": "array", "items": {"type": "string"}},
                 "minor_key_phrases": {"type": "array", "items": {"type": "string"}},
             },
-            "required": ["case_number", "major_findings", "minor_findings", "clarifications", "score"],
+            "required": [
+                "case_number",
+                "major_findings",
+                "minor_findings",
+                "clarifications",
+                "score",
+                "major_key_phrases",
+                "minor_key_phrases",
+            ],
             "additionalProperties": False
         },
         "strict": True
