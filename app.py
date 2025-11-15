@@ -40,7 +40,11 @@ RADIOLOGY_SUMMARY_TOOL = [
                 "major_findings": {"type": "array", "items": {"type": "string"}},
                 "minor_findings": {"type": "array", "items": {"type": "string"}},
                 "clarifications": {"type": "array", "items": {"type": "string"}},
-                "score": {"type": "integer"}
+                "score": {"type": "integer"},
+
+                # NEW FIELDS: aligned with major/minor_findings
+                "major_key_phrases": {"type": "array", "items": {"type": "string"}},
+                "minor_key_phrases": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["case_number", "major_findings", "minor_findings", "clarifications", "score"],
             "additionalProperties": False
@@ -139,6 +143,22 @@ B) CORRECTIONS (negations/downgrades):
 - Same-entity descriptor/wording without management change → CLARIFICATIONS.
 </additions_vs_corrections>
 
+<key_change_phrases>
+For each item you output in major_findings and minor_findings, you must also output a matching "key change phrase" that captures the minimal clinically meaningful words that differ between the resident and attending report.
+
+- major_key_phrases: string[] — same length and order as major_findings.
+- minor_key_phrases: string[] — same length and order as minor_findings.
+
+Rules:
+- The key phrase should be the minimal but clinically meaningful phrase that encodes the change, e.g. "active extravasation", "right pneumothorax", "no pulmonary embolism".
+- The key phrase MUST appear verbatim as a contiguous substring inside the corresponding major_findings / minor_findings string so the frontend can highlight it reliably.
+- Avoid paraphrasing. Reuse the exact wording from the item string whenever possible.
+- If your ideal minimal phrase is not already present in the item string, slightly adjust the item string so that it contains that phrase exactly.
+- Do NOT add extra punctuation or quotes in major_key_phrases / minor_key_phrases. Use simple plain text phrases (e.g., active extravasation).
+- Do NOT change how you phrase the full strings in major_findings or minor_findings compared with what you would otherwise output. The key phrase is an extra field, not a replacement.
+- If there is no obvious minimal phrase, choose the shortest phrase that still clearly represents the change, and ensure it appears exactly in the item string.
+</key_change_phrases>
+
 <certainty_aware_corrections>
 For attending negations of resident claims about critical diagnoses (PE, ICH, PTX, bowel perforation, etc.), use the resident’s certainty to calibrate severity:
 
@@ -203,12 +223,24 @@ Before output:
 - CLARIFICATIONS contains descriptor/wording/formatting items only.
 - Score = (3 × count(major_findings)) + (1 × count(minor_findings)).
 - Exact case_number is echoed.
+- major_key_phrases is present and an array.
+- minor_key_phrases is present and an array.
+- len(major_key_phrases) == len(major_findings).
+- len(minor_key_phrases) == len(minor_findings).
 - JSON matches the provided schema; no extra keys; no prose.
 </validation_checklist>
 
 <output_contract>
 Return your analysis by calling the `summarize_radiology_report` function tool.
 Do not include any prose before or after the JSON.
+The tool arguments must include:
+- case_number (string)
+- major_findings (string[])
+- minor_findings (string[])
+- clarifications (string[])
+- score (integer)
+- major_key_phrases (string[]) aligned with major_findings
+- minor_key_phrases (string[]) aligned with minor_findings
 </output_contract>
 
 <examples>
@@ -300,6 +332,41 @@ Attending: “Small acute subarachnoid hemorrhage.”
 → minor: []
 → clarifications: []
 → score: 3
+
+Example tool call payload:
+{
+  "case_number": "1",
+  "major_findings": [
+    "Acute subarachnoid hemorrhage (perceptual; new critical finding)"
+  ],
+  "minor_findings": [],
+  "clarifications": [],
+  "score": 3,
+  "major_key_phrases": [
+    "acute subarachnoid hemorrhage"
+  ],
+  "minor_key_phrases": []
+}
+
+In the following example, notice that each key phrase is copied verbatim as a literal substring from the matching summary string so it can be highlighted without paraphrasing.
+{
+  "case_number": "5",
+  "major_findings": [
+    "Small right apical pneumothorax (perceptual; new critical finding)"
+  ],
+  "minor_findings": [
+    "Mild bibasilar atelectasis (perceptual)"
+  ],
+  "clarifications": [],
+  "score": 4,
+  "major_key_phrases": [
+    "right apical pneumothorax"
+  ],
+  "minor_key_phrases": [
+    "bibasilar atelectasis"
+  ]
+}
+This literal-substring requirement applies to every item you produce.
 
 Example 12 — Descriptor only:
 Resident: “Sigmoid diverticulitis.”
@@ -417,6 +484,35 @@ def get_summary(case_text, custom_prompt, case_number):
             if item.type == "function_call" and item.name == "summarize_radiology_report":
                 raw_arguments = item.arguments
                 parsed_json = json.loads(raw_arguments)
+
+                # Ensure key phrase arrays exist and align with findings
+                majors = parsed_json.get("major_findings") or []
+                minors = parsed_json.get("minor_findings") or []
+
+                major_kp = parsed_json.get("major_key_phrases")
+                minor_kp = parsed_json.get("minor_key_phrases")
+
+                mismatch = (
+                    not isinstance(major_kp, list) or len(major_kp) != len(majors) or
+                    not isinstance(minor_kp, list) or len(minor_kp) != len(minors)
+                )
+
+                if mismatch:
+                    logger.warning(
+                        "Key phrase length mismatch for case %s (majors=%s, major_kp=%s, minors=%s, minor_kp=%s)",
+                        case_number,
+                        len(majors),
+                        len(major_kp) if isinstance(major_kp, list) else "None",
+                        len(minors),
+                        len(minor_kp) if isinstance(minor_kp, list) else "None",
+                    )
+
+                # If the model did not supply them correctly, create placeholders.
+                if not isinstance(major_kp, list) or len(major_kp) != len(majors):
+                    parsed_json["major_key_phrases"] = [""] * len(majors)
+
+                if not isinstance(minor_kp, list) or len(minor_kp) != len(minors):
+                    parsed_json["minor_key_phrases"] = [""] * len(minors)
                 break
 
         if parsed_json:
@@ -603,6 +699,7 @@ def index():
     .para.rep{border-left-color:#7ab8ff;background:rgba(122,184,255,.06)}
     .word.ins{color:var(--green);font-weight:600}
     .word.del{color:var(--red);text-decoration:line-through}
+    .key-change{color:var(--red);font-weight:600}
     .loading-bar{position:fixed;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,var(--primary),#7ab8ff);z-index:1000;transition:width .3s ease}
 
     /* Layout: collapsible left, content right with right border */
@@ -1030,8 +1127,26 @@ Attending Report:
       const total = majors.length + minors.length + clar.length;
       const pctMajor = total ? Math.round((majors.length/total)*100) : 0;
 
-      const majorsList = majors.length ? `<ul class="mb-0">${majors.map(x=>`<li>${x}</li>`).join('')}</ul>` : '<div class="text-secondary small">None</div>';
-      const minorsList = minors.length ? `<ul class="mb-0">${minors.map(x=>`<li>${x}</li>`).join('')}</ul>` : '<div class="text-secondary small">None</div>';
+      const majorKey = s.major_key_phrases || [];
+      const minorKey = s.minor_key_phrases || [];
+
+      const majorsList = majors.length
+        ? `<ul class="mb-0">` +
+            majors.map((x, idx) => {
+              const kp = majorKey[idx] || "";
+              return `<li>${highlightPhraseHTML(x, kp)}</li>`;
+            }).join('') +
+          `</ul>`
+        : '<div class="text-secondary small">None</div>';
+
+      const minorsList = minors.length
+        ? `<ul class="mb-0">` +
+            minors.map((x, idx) => {
+              const kp = minorKey[idx] || "";
+              return `<li>${highlightPhraseHTML(x, kp)}</li>`;
+            }).join('') +
+          `</ul>`
+        : '<div class="text-secondary small">None</div>';
       const clarList = clar.length ? `<ul class="mb-0">${clar.map(x=>`<li>${x}</li>`).join('')}</ul>` : '<div class="text-secondary small">None</div>';
 
       return `
@@ -1510,6 +1625,29 @@ No pulmonary embolism.`;
       return str.replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[m]));
     }
     window.escapeHTML = escapeHTML;
+
+    function highlightPhraseHTML(fullText, phrase) {
+      if (fullText == null) return '';
+
+      const text = String(fullText);
+      const needle = phrase == null ? '' : String(phrase).trim();
+      if (!needle) return escapeHTML(text);
+
+      const lowerText = text.toLowerCase();
+      const lowerNeedle = needle.toLowerCase();
+      const idx = lowerText.indexOf(lowerNeedle);
+      if (idx === -1) {
+        // If not found, return escaped original string without highlight.
+        return escapeHTML(text);
+      }
+
+      const before = text.slice(0, idx);
+      const match  = text.slice(idx, idx + needle.length);
+      const after  = text.slice(idx + needle.length);
+
+      return `${escapeHTML(before)}<span class="key-change">${escapeHTML(match)}</span>${escapeHTML(after)}`;
+    }
+    window.highlightPhraseHTML = highlightPhraseHTML;
 
     // ---------- Keyboard shortcuts ----------
     function focusCase(i) {
