@@ -1,12 +1,14 @@
 from flask import Flask, render_template_string, request
-import difflib, re, os, json, logging, html
-import openai as _openai_pkg
-from openai import OpenAI
-from openai import (
-    APIError, APIConnectionError, BadRequestError,
-    AuthenticationError, RateLimitError, NotFoundError
-)
+import difflib, re, logging, html
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from ai_compare import (
+    AI_MODEL_OPTIONS,
+    DEFAULT_AI_PROVIDER,
+    compare_case_summary,
+    get_provider_config_error,
+    normalize_provider,
+)
 
 app = Flask(__name__)
 
@@ -17,49 +19,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
-
-logger.info(f"openai sdk version: {_openai_pkg.__version__}")
-logger.info(f"API key present: {bool(os.getenv('OPENAI_API_KEY'))}")
-
-# --------------------------- OpenAI ----------------------------------
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-MODEL_ID = os.getenv("MODEL_ID", "gpt-5-mini")  # flip in env as needed
-REASONING_EFFORT = os.getenv("REASONING_EFFORT", "minimal")  # minimal|low|medium|high
-VERBOSITY = os.getenv("VERBOSITY", "low")                    # low|medium|high
-
-# ----------------------- Tool Definition -----------------------------
-RADIOLOGY_SUMMARY_TOOL = [
-    {
-        "type": "function",
-        "name": "summarize_radiology_report",
-        "description": "Summarizes the differences between a resident and attending radiology report, categorizing findings and calculating a score.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "case_number": {"type": "string"},
-                "major_findings": {"type": "array", "items": {"type": "string"}},
-                "minor_findings": {"type": "array", "items": {"type": "string"}},
-                "clarifications": {"type": "array", "items": {"type": "string"}},
-                "score": {"type": "integer"},
-
-                # NEW FIELDS: aligned with major/minor_findings
-                "major_key_phrases": {"type": "array", "items": {"type": "string"}},
-                "minor_key_phrases": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": [
-                "case_number",
-                "major_findings",
-                "minor_findings",
-                "clarifications",
-                "score",
-                "major_key_phrases",
-                "minor_key_phrases",
-            ],
-            "additionalProperties": False
-        },
-        "strict": True
-    }
-]
 
 # ----------------------- Default prompt ------------------------------
 DEFAULT_PROMPT = """Developer: Radiology revision differ (GPT-5).
@@ -472,99 +431,21 @@ def create_diff_by_section(resident_text, attending_text):
                     diff_html += f'<div class="para ins">{html.escape(att_paragraph)}</div>'
     return diff_html
 
-# ------------------------- OpenAI call --------------------------------
-def get_summary(case_text, custom_prompt, case_number):
-    try:
-        logger.info(f"Processing case {case_number} with model={MODEL_ID} using function calling.")
-        response = client.responses.create(
-            model=MODEL_ID,
-            instructions=custom_prompt,
-            input=(f"Case Number: {case_number}\n{case_text}"),
-            tools=RADIOLOGY_SUMMARY_TOOL,
-            tool_choice={"type": "function", "name": "summarize_radiology_report"},
-            reasoning={"effort": REASONING_EFFORT},   # <-- uses env variable
-            text={"verbosity": VERBOSITY},            # <-- uses env variable
-        )
-
-        parsed_json = None
-        raw_arguments = ""
-        for item in response.output:
-            if item.type == "function_call" and item.name == "summarize_radiology_report":
-                raw_arguments = item.arguments
-                parsed_json = json.loads(raw_arguments)
-
-                # Ensure key phrase arrays exist and align with findings
-                majors = parsed_json.get("major_findings") or []
-                minors = parsed_json.get("minor_findings") or []
-
-                major_kp = parsed_json.get("major_key_phrases")
-                minor_kp = parsed_json.get("minor_key_phrases")
-
-                mismatch = (
-                    not isinstance(major_kp, list) or len(major_kp) != len(majors) or
-                    not isinstance(minor_kp, list) or len(minor_kp) != len(minors)
-                )
-
-                if mismatch:
-                    logger.warning(
-                        "Key phrase length mismatch for case %s (majors=%s, major_kp=%s, minors=%s, minor_kp=%s)",
-                        case_number,
-                        len(majors),
-                        len(major_kp) if isinstance(major_kp, list) else "None",
-                        len(minors),
-                        len(minor_kp) if isinstance(minor_kp, list) else "None",
-                    )
-
-                # If the model did not supply them correctly, create placeholders.
-                if not isinstance(major_kp, list) or len(major_kp) != len(majors):
-                    parsed_json["major_key_phrases"] = [""] * len(majors)
-
-                if not isinstance(minor_kp, list) or len(minor_kp) != len(minors):
-                    parsed_json["minor_key_phrases"] = [""] * len(minors)
-                break
-
-        if parsed_json:
-            logger.info(f"Function call parsed for case {case_number}.")
-            return parsed_json
-        else:
-            logger.error(f"No function call in response for case {case_number}")
-            return {"case_number": case_number, "error": "AI did not return the expected tool call."}
-
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parse failure for case {case_number}: {e!r}")
-        logger.debug(f"Raw arguments: {raw_arguments}")
-        return {"case_number": case_number, "error": "Invalid JSON in tool arguments from AI."}
-    except NotFoundError as e:
-        logger.error(f"[404] NotFound: {e.message}")
-        return {"case_number": case_number, "error": f"404 NotFound: {e.message}. Check model id / project key."}
-    except BadRequestError as e:
-        logger.error(f"[400] BadRequest: {e.message}")
-        return {"case_number": case_number, "error": f"400 BadRequest: {e.message}"}
-    except AuthenticationError as e:
-        logger.error(f"[401] AuthError: {e.message}")
-        return {"case_number": case_number, "error": "401 Unauthorized: check OPENAI_API_KEY"}
-    except RateLimitError as e:
-        logger.error(f"[429] RateLimit: {e.message}")
-        return {"case_number": case_number, "error": "429 Rate limited"}
-    except APIConnectionError as e:
-        logger.error(f"[NET] APIConnectionError: {e.message}")
-        return {"case_number": case_number, "error": "Network error"}
-    except APIError as e:
-        logger.error(f"[5xx] APIError: {e.message}")
-        return {"case_number": case_number, "error": "Server error"}
-    except Exception as e:
-        logger.error(f"Unhandled error for case {case_number}: {repr(e)}")
-        return {"case_number": case_number, "error": f"Unhandled: {repr(e)}"}
-
 # ------------------------ Pipeline ------------------------------------
-def process_cases(cases_data, custom_prompt, max_workers=100):
+def process_cases(cases_data, custom_prompt, ai_provider, max_workers=100):
     structured_output = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Provider-specific AI calls are isolated in ai_compare.py; this pipeline only
+        # submits work and consumes one normalized JSON shape for the frontend.
         future_to_case = {
-            executor.submit(get_summary, case_text, custom_prompt, case_num): case_num
+            executor.submit(compare_case_summary, case_text, custom_prompt, case_num, ai_provider): case_num
             for case_text, case_num in cases_data
         }
-        logger.info(f"Submitted {len(cases_data)} cases for concurrent processing.")
+        logger.info(
+            "Submitted %s cases for concurrent processing with provider=%s.",
+            len(cases_data),
+            ai_provider,
+        )
 
         for future in as_completed(future_to_case):
             case_num = future_to_case[future]
@@ -580,7 +461,7 @@ def process_cases(cases_data, custom_prompt, max_workers=100):
     logger.info(f"Completed {len(structured_output)} summaries.")
     return structured_output
 
-def extract_cases(text, custom_prompt):
+def extract_cases(text, custom_prompt, ai_provider):
     text = text.replace('\r\n', '\n').replace('\r', '\n')
     cases = re.split(r'(?m)^Case\s+(\d+)', text, flags=re.IGNORECASE)
 
@@ -617,7 +498,7 @@ def extract_cases(text, custom_prompt):
     if not cases_data:
         return parsed_cases
 
-    ai_summaries = process_cases(cases_data, custom_prompt, max_workers=100)
+    ai_summaries = process_cases(cases_data, custom_prompt, ai_provider, max_workers=100)
     summaries_by_case_num = {str(s.get('case_number')): s for s in ai_summaries}
 
     for case_text, case_num in cases_data:
@@ -645,12 +526,25 @@ def extract_cases(text, custom_prompt):
 @app.route('/', methods=['GET', 'POST'])
 def index():
     custom_prompt = request.form.get('custom_prompt', DEFAULT_PROMPT)
+    # The single-page model selector feeds this value, and backend dispatch happens
+    # inside ai_compare.py so the rest of the request flow can stay unchanged.
+    selected_ai_model = request.form.get('ai_model', DEFAULT_AI_PROVIDER)
     case_data = []
+    form_error = None
 
     if request.method == 'POST':
         text_block = request.form.get('report_text', '')
-        if text_block.strip():
-            case_data = extract_cases(text_block, custom_prompt)
+        try:
+            selected_ai_model = normalize_provider(selected_ai_model)
+        except ValueError as exc:
+            form_error = str(exc)
+            selected_ai_model = DEFAULT_AI_PROVIDER
+        else:
+            form_error = get_provider_config_error(selected_ai_model)
+            if text_block.strip() and not form_error:
+                case_data = extract_cases(text_block, custom_prompt, selected_ai_model)
+    else:
+        selected_ai_model = normalize_provider(selected_ai_model)
 
     template = """
 <!doctype html>
@@ -680,8 +574,8 @@ def index():
     a{color:var(--primary)} a:hover{color:var(--primary-2)}
     .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px}
     .panel-2{background:var(--panel-2);border:1px solid var(--border);border-radius:12px}
-    .form-control,textarea,input{background:#0f131b!important;color:var(--text)!important;border:1px solid var(--border)!important}
-    .form-control:focus{box-shadow:0 0 0 .25rem rgba(77,163,255,.15)}
+    .form-control,.form-select,textarea,input,select{background:#0f131b!important;color:var(--text)!important;border:1px solid var(--border)!important}
+    .form-control:focus,.form-select:focus{box-shadow:0 0 0 .25rem rgba(77,163,255,.15)}
     .badge-score{background:#1e2a3d;color:#b7d3ff;border:1px solid #2e405e}
     .chip{border-radius:999px;padding:.2rem .55rem;font-weight:600;border:1px solid #334155;display:inline-flex;align-items:center;gap:.35rem}
     .chip.major{background:color-mix(in srgb,var(--chip-major) 18%,transparent);color:#ffc4cf;border-color:#5c2034}
@@ -803,6 +697,9 @@ def index():
   <!-- Top: Paste block at the top -->
   <div class="container-fluid mt-3">
     <div class="panel p-3 mb-3">
+      {% if form_error %}
+      <div class="alert alert-danger py-2 mb-3" role="alert">{{ form_error }}</div>
+      {% endif %}
       <form method="POST" id="reportForm">
         <div class="row g-3">
           <div class="col-12">
@@ -820,6 +717,14 @@ Resident Report:
 
 Attending Report:
 ...">{{ request.form.get('report_text', '') }}</textarea>
+          </div>
+          <div class="col-md-4 col-lg-3">
+            <label class="form-label fw-semibold" for="ai_model">AI Model</label>
+            <select id="ai_model" name="ai_model" class="form-select">
+              {% for provider_value, provider_label in ai_model_options.items() %}
+              <option value="{{ provider_value }}" {% if provider_value == selected_ai_model %}selected{% endif %}>{{ provider_label }}</option>
+              {% endfor %}
+            </select>
           </div>
           <div class="col-12">
             <label class="form-label fw-semibold">Custom prompt (optional)</label>
@@ -1507,9 +1412,11 @@ No pulmonary embolism.`;
       }
 
       const promptField = document.getElementById('custom_prompt');
+      const modelField = document.getElementById('ai_model');
       const exportPayload = {
         version: 'compare-revisions.v1',
         exported_at: new Date().toISOString(),
+        ai_model: modelField ? modelField.value : null,
         custom_prompt: promptField ? promptField.value : null,
         cases: caseData.map(c => ({
           case_num: c.case_num,
@@ -1579,6 +1486,10 @@ No pulmonary embolism.`;
         } else if (parsed && typeof parsed === 'object') {
           if (Array.isArray(parsed.cases)) {
             restored = normalizeFromFullState(parsed);
+            if (parsed.ai_model != null) {
+              const modelField = document.getElementById('ai_model');
+              if (modelField) modelField.value = parsed.ai_model;
+            }
             if (parsed.custom_prompt != null) {
               document.getElementById('custom_prompt').value = parsed.custom_prompt;
             }
@@ -1736,7 +1647,14 @@ No pulmonary embolism.`;
 </body>
 </html>
     """
-    return render_template_string(template, case_data=case_data, custom_prompt=custom_prompt)
+    return render_template_string(
+        template,
+        case_data=case_data,
+        custom_prompt=custom_prompt,
+        selected_ai_model=selected_ai_model,
+        ai_model_options=AI_MODEL_OPTIONS,
+        form_error=form_error,
+    )
 
 # Local debugging only
 if __name__ == '__main__':
